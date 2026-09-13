@@ -15,6 +15,7 @@ func TestStateRoundTripAndExclusiveLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	r.ThreadID = "specific-thread"
+	r.SessionName = "Fix quota recovery"
 	r.Goal = &Goal{ThreadID: r.ThreadID, Objective: "Finish", Status: "usageLimited", CreatedAt: 1}
 	r.NextCheck = time.Now().Add(4 * time.Hour).UTC()
 	r.RecoveryPending = true
@@ -33,7 +34,7 @@ func TestStateRoundTripAndExclusiveLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !loaded.NextCheck.Equal(r.NextCheck) || loaded.ThreadID != r.ThreadID || !loaded.RecoveryPending {
+	if !loaded.NextCheck.Equal(r.NextCheck) || loaded.ThreadID != r.ThreadID || loaded.SessionName != r.SessionName || !loaded.RecoveryPending {
 		t.Fatal("resume state lost")
 	}
 	path, _ := s.path(r.ID)
@@ -56,6 +57,35 @@ func TestStateRoundTripAndExclusiveLock(t *testing.T) {
 	files, _ := filepath.Glob(filepath.Join(s.Dir, ".state-*"))
 	if len(files) != 0 {
 		t.Fatal("temporary state left behind")
+	}
+}
+
+func TestListIncludesEveryRepositoryAndCompletedRuns(t *testing.T) {
+	s := Store{Dir: filepath.Join(t.TempDir(), "runs")}
+	if records, err := s.List(); err != nil || len(records) != 0 {
+		t.Fatalf("empty store: %v, %v", records, err)
+	}
+	var want []*Record
+	for i, dir := range []string{"/project-a", "/project-b", "/project-a"} {
+		r, _ := NewRecord(dir, "codex", nil, time.Hour)
+		if i == 1 {
+			r.SessionName = "Completed task"
+			r.Goal = &Goal{Status: "complete"}
+			r.StoppedAt = time.Now()
+		}
+		if err := s.Save(r); err != nil {
+			t.Fatal(err)
+		}
+		want = append(want, r)
+	}
+	got, err := s.List()
+	if err != nil || len(got) != len(want) {
+		t.Fatalf("list: %v, %v", got, err)
+	}
+	for i, r := range got {
+		if r.ID != want[len(want)-1-i].ID {
+			t.Fatalf("wrong order: %v", got)
+		}
 	}
 }
 

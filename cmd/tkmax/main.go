@@ -19,6 +19,9 @@ const help = `Usage:
   tkmax [--codex-bin PATH] [--fallback-wait 5h] [-- CODEX_OPTIONS...]
   tkmax resume [RUN_ID]
   tkmax status [RUN_ID]
+  tkmax ls
+  tkmax open [--print-path] RUN_ID
+  tkmax shell-init bash|zsh
 
 Start Codex normally, then set /goal inside its TUI. tkmax resumes that goal
 after a usage window resets. Manual pauses and goal completion leave the TUI
@@ -26,6 +29,9 @@ open. Exit Codex normally to stop the wrapper and its private app server.
 
 resume/status default to the latest unfinished run in the current directory.
 status with an explicit ID can also inspect completed runs.
+ls lists all saved runs with their Codex session names and repository directories.
+To let open change your shell's directory, add eval "$(tkmax shell-init bash)"
+to ~/.bashrc (use zsh and ~/.zshrc for Zsh). --print-path prints only the directory.
 
 Supported Codex options after --:
   --model/-m, --sandbox/-s, --ask-for-approval/-a, --cd/-C, --add-dir,
@@ -51,6 +57,12 @@ func main() {
 }
 
 func run(ctx context.Context, args []string) error {
+	if len(args) > 0 {
+		switch args[0] {
+		case "ls", "open", "shell-init":
+			return runNavigation(args, os.Stdout)
+		}
+	}
 	mode := "start"
 	if len(args) > 0 && (args[0] == "resume" || args[0] == "status") {
 		mode = args[0]
@@ -123,7 +135,7 @@ func run(ctx context.Context, args []string) error {
 			return err
 		}
 		if mode == "status" {
-			fmt.Printf("Run: %s\nDirectory: %s\nThread: %s\nState: %s\n", record.ID, record.CWD, record.ThreadID, record.State)
+			fmt.Printf("Run: %s\nSession: %s\nDirectory: %s\nThread: %s\nState: %s\n", record.ID, sessionLabel(record), record.CWD, record.ThreadID, record.State)
 			if record.Goal != nil {
 				fmt.Printf("Goal: %s\nGoal status: %s\n", record.Goal.Objective, record.Goal.Status)
 			}

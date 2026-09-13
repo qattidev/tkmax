@@ -186,7 +186,7 @@ func isUserAction(method string) bool {
 
 func observedMethod(method string) bool {
 	switch method {
-	case "thread/goal/updated", "thread/goal/cleared", "thread/status/changed", "thread/settings/updated", "turn/started", "turn/completed", "error", "thread/closed", "thread/archived", "thread/deleted", "serverRequest/resolved":
+	case "thread/name/updated", "thread/goal/updated", "thread/goal/cleared", "thread/status/changed", "thread/settings/updated", "turn/started", "turn/completed", "error", "thread/closed", "thread/archived", "thread/deleted", "serverRequest/resolved":
 		return true
 	}
 	return false
@@ -264,6 +264,8 @@ func (e *Engine) Server(b []byte, now time.Time) error {
 
 type threadInfo struct {
 	ID             string `json:"id"`
+	Name           string `json:"name"`
+	CWD            string `json:"cwd"`
 	ParentThreadID string `json:"parentThreadId"`
 	Model          string `json:"model"`
 	Status         struct {
@@ -282,6 +284,10 @@ func (e *Engine) selectThread(t threadInfo) {
 		e.Record.ManualHold = false
 	}
 	e.Record.ThreadID = t.ID
+	e.Record.SessionName = t.Name
+	if t.CWD != "" {
+		e.Record.CWD = t.CWD
+	}
 	e.status = t.Status.Type
 	e.model = t.Model
 	e.Record.State = "observing"
@@ -292,9 +298,10 @@ func (e *Engine) selectThread(t threadInfo) {
 
 func (e *Engine) observe(method string, params json.RawMessage) {
 	var p struct {
-		ThreadID string `json:"threadId"`
-		Goal     *Goal  `json:"goal"`
-		Status   struct {
+		ThreadID   string `json:"threadId"`
+		ThreadName string `json:"threadName"`
+		Goal       *Goal  `json:"goal"`
+		Status     struct {
 			Type string `json:"type"`
 		} `json:"status"`
 		Turn struct {
@@ -314,6 +321,9 @@ func (e *Engine) observe(method string, params json.RawMessage) {
 		return
 	}
 	switch method {
+	case "thread/name/updated":
+		e.Record.SessionName = p.ThreadName
+		e.save()
 	case "thread/goal/updated":
 		e.applyGoal(p.Goal)
 	case "thread/goal/cleared":

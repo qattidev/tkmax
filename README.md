@@ -35,10 +35,30 @@ before quitting. `SIGINT`, `SIGTERM`, and terminal hangup stop the wrapper.
 ## Resume and inspect
 
 ```sh
+tkmax ls                     # all saved runs, across repositories
 tkmax resume                 # latest unfinished run in this directory
 tkmax resume RUN_ID          # exact saved run, from any directory
 tkmax status RUN_ID          # useful from another terminal during a wait
 ```
+
+`tkmax ls` shows the run ID, Codex session name, last observed state, and full
+repository/working directory, newest update first. Completed and stopped runs
+are included. Session names follow Codex's title and rename notifications;
+older records and unnamed sessions fall back to the Codex thread UUID until a
+name is observed on resume. Runs that have not started a session are labelled
+accordingly. The run ID stays stable when a session is renamed.
+
+To navigate to a run's directory in your current shell, enable the shell hook:
+
+```sh
+eval "$(tkmax shell-init zsh)"  # add to ~/.zshrc; use bash and ~/.bashrc for Bash
+tkmax open RUN_ID
+```
+
+The hook is necessary because an executable cannot change its parent shell's
+directory. `open` only changes directory; it does not resume Codex. Without the
+hook, use `cd -- "$(tkmax open --print-path RUN_ID)"`. Missing runs or removed
+directories produce an error. `--print-path` is also available for scripts.
 
 The run ID is printed at startup and shutdown. `tkmax status` without an ID
 selects the latest unfinished run in the current directory. Use an explicit ID
@@ -108,7 +128,8 @@ is used. See the [Codex app-server documentation](https://learn.chatgpt.com/docs
 
 Run records and server diagnostics are under `$XDG_STATE_HOME/tkmax/runs`, or
 `~/.local/state/tkmax/runs`. Records use atomic writes and owner-only file
-permissions. They include the goal text, launch option values, thread UUID,
+permissions. They include the goal text, launch option values, thread UUID, Codex
+session name, working directory,
 deadline, and pending recovery intent. Codex retains its own conversation history
 and credentials. A `.log` file holds app-server stderr for the latest invocation;
 tkmax does not log full protocol transcripts. Run records are retained after exit.

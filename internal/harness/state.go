@@ -40,6 +40,7 @@ type Record struct {
 	CodexArgs       []string      `json:"codexArgs,omitempty"`
 	FallbackWait    time.Duration `json:"fallbackWait"`
 	ThreadID        string        `json:"threadId,omitempty"`
+	SessionName     string        `json:"sessionName,omitempty"`
 	Goal            *Goal         `json:"goal,omitempty"`
 	State           string        `json:"state"`
 	NextCheck       time.Time     `json:"nextCheck,omitempty"`
@@ -146,7 +147,8 @@ func (s Store) Load(id string) (*Record, error) {
 	return &r, nil
 }
 
-func (s Store) Latest(cwd string) (*Record, error) {
+// List includes stopped and completed runs across all repositories, newest first.
+func (s Store) List() ([]*Record, error) {
 	files, err := filepath.Glob(filepath.Join(s.Dir, "*.json"))
 	if err != nil {
 		return nil, err
@@ -159,15 +161,28 @@ func (s Store) Latest(cwd string) (*Record, error) {
 		if err != nil {
 			return nil, err
 		}
+		records = append(records, r)
+	}
+	sort.Slice(records, func(i, j int) bool {
+		if records[i].UpdatedAt.Equal(records[j].UpdatedAt) {
+			return records[i].ID < records[j].ID
+		}
+		return records[i].UpdatedAt.After(records[j].UpdatedAt)
+	})
+	return records, nil
+}
+
+func (s Store) Latest(cwd string) (*Record, error) {
+	records, err := s.List()
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range records {
 		if r.CWD == cwd && r.ThreadID != "" && (r.Goal == nil || r.Goal.Status != "complete") {
-			records = append(records, r)
+			return r, nil
 		}
 	}
-	if len(records) == 0 {
-		return nil, errors.New("no unfinished tkmax run in this directory; specify a run ID or start tkmax")
-	}
-	sort.Slice(records, func(i, j int) bool { return records[i].UpdatedAt.After(records[j].UpdatedAt) })
-	return records[0], nil
+	return nil, errors.New("no unfinished tkmax run in this directory; specify a run ID or start tkmax")
 }
 
 // Lock is process-scoped and automatically released even after SIGKILL.

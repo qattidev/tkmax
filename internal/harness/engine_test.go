@@ -81,6 +81,37 @@ func (r *rig) preflight(q Quota) {
 }
 func ptr[T any](v T) *T { return &v }
 
+func TestSessionNameTracksSelectionAndRename(t *testing.T) {
+	r := newRig(t)
+	resume := r.user("thread/resume", map[string]any{"threadId": "thread-1"})
+	r.reply(resume, map[string]any{"thread": map[string]any{
+		"id": "thread-1", "name": "Fix the build", "cwd": "/project-a",
+		"status": map[string]any{"type": "idle"},
+	}})
+	if saved := r.saves[len(r.saves)-1]; saved.SessionName != "Fix the build" || saved.CWD != "/project-a" {
+		t.Fatalf("session metadata not saved: %+v", saved)
+	}
+	r.reply(r.request("thread/goal/get"), map[string]any{"goal": r.e.Record.Goal})
+	r.notify("thread/name/updated", map[string]any{"threadId": "other", "threadName": "Unrelated"})
+	if r.e.Record.SessionName != "Fix the build" {
+		t.Fatal("unrelated rename changed the run")
+	}
+	r.e.optOut["thread/name/updated"] = true
+	before := len(r.tui)
+	r.notify("thread/name/updated", map[string]any{"threadId": "thread-1", "threadName": "Repair CI"})
+	if r.saves[len(r.saves)-1].SessionName != "Repair CI" || len(r.tui) != before {
+		t.Fatal("rename not persisted or TUI notification opt-out ignored")
+	}
+	if !observedMethod("thread/name/updated") {
+		t.Fatal("rename notifications can be disabled upstream")
+	}
+	next := r.user("thread/start", map[string]any{})
+	r.reply(next, map[string]any{"thread": map[string]any{"id": "thread-2", "cwd": "/project-b"}})
+	if r.e.Record.SessionName != "" || r.e.Record.CWD != "/project-b" {
+		t.Fatal("new thread retained the old session identity")
+	}
+}
+
 func TestQuotaCyclesAndCompletion(t *testing.T) {
 	r := newRig(t)
 	for i := 0; i < 3; i++ {
