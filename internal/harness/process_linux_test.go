@@ -1,0 +1,72 @@
+//go:build linux
+
+package harness
+
+import (
+	"bufio"
+	"os/exec"
+	"runtime"
+	"strconv"
+	"strings"
+	"syscall"
+	"testing"
+	"time"
+)
+
+func TestChildStopTerminatesOwnedProcessGroup(t *testing.T) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	cmd := exec.Command("/bin/sh", "-c", `trap 'kill "$kid" 2>/dev/null; wait "$kid"; exit' TERM; sleep 60 & kid=$!; echo "$kid"; wait`)
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := startChild(cmd, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	line, err := bufio.NewReader(out).ReadString('\n')
+	if err != nil {
+		child.stop()
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(line))
+	if err != nil {
+		child.stop()
+		t.Fatal(err)
+	}
+	child.stop()
+	deadline := time.Now().Add(time.Second)
+	for syscall.Kill(pid, 0) == nil && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := syscall.Kill(pid, 0); err != syscall.ESRCH {
+		t.Fatalf("descendant %d survived shutdown: %v", pid, err)
+	}
+}
+
+func TestChildStopEscalatesWhenTerminationIgnored(t *testing.T) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	cmd := exec.Command("/bin/sh", "-c", `trap '' TERM; echo ready; while :; do sleep 60; done`)
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := startChild(cmd, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bufio.NewReader(out).ReadString('\n'); err != nil {
+		child.stop()
+		t.Fatal(err)
+	}
+	started := time.Now()
+	child.stop()
+	if time.Since(started) > 5*time.Second {
+		t.Fatal("shutdown exceeded grace period")
+	}
+	if child.err == nil {
+		t.Fatal("expected forced process termination")
+	}
+}
