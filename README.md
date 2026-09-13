@@ -9,17 +9,27 @@ Codex versions are rejected until their protocol is tested.
 ## Build and run
 
 ```sh
-go build -o tkmax ./cmd/tkmax
+make build
 ./tkmax
 ```
 
-If your checkout has inaccessible Git metadata, add `-buildvcs=false` to
-the build command. Alternatively, install the command into your Go bin directory:
+Alternatively, install the command into your Go bin directory:
 
 ```sh
-go install ./cmd/tkmax
+make install
 tkmax
 ```
+
+Installation uses `GOBIN`, or `$(go env GOPATH)/bin` when `GOBIN` is unset;
+ensure that directory is on your `PATH`. Override it with
+`make install GOBIN=/absolute/path/to/bin`.
+
+Run `make help` for all targets. `make run ARGS="--help"` builds and runs the
+local binary with arguments. Use `make deps` to download dependencies,
+`make fmt` to format Go sources, and `make clean` to remove local build output.
+If your checkout has inaccessible Git metadata, use
+`make build GOFLAGS=-buildvcs=false` (also supported by `make install`).
+Without Make, use `go build -o tkmax ./cmd/tkmax` or `go install ./cmd/tkmax`.
 
 Discuss the task in Codex, then enter `/goal` and describe the outcome and
 completion criteria. Codex's normal goal mode continues working. When the goal
@@ -137,9 +147,10 @@ tkmax does not log full protocol transcripts. Run records are retained after exi
 ## Tests
 
 ```sh
-go test -race ./...
-go vet ./...
-TKMAX_CODEX_SMOKE=1 go test ./internal/harness -run TestInstalled -v
+make check                   # race-enabled tests and go vet
+make test                    # race-enabled tests only
+make vet                     # static checks only
+make smoke                   # opt-in test against the installed Codex binary
 ```
 
 The default suite uses fake time for quota cycles, fallback waits, weekly limits,
