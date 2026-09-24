@@ -3,8 +3,7 @@
 A Go wrapper for long-running Codex goals. It launches the real Codex TUI,
 waits when usage is exhausted, and resumes the same goal when quota returns.
 
-Requires **Linux**, **Go 1.27+** to build, and **Codex CLI 0.154.0**. Other
-Codex versions are rejected until their protocol is tested.
+Requires **Linux**, **Go 1.27+** to build, and **Codex CLI 0.154.0 or newer**.
 
 ## Build and run
 

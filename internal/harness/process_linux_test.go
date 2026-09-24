@@ -13,6 +13,31 @@ import (
 	"time"
 )
 
+func TestCodexVersionSupported(t *testing.T) {
+	for _, tc := range []struct {
+		version string
+		want    bool
+	}{
+		{"0.154.0", true},
+		{"0.154.1", true},
+		{"0.155.0", true},
+		{"0.1000.0", true},
+		{"1.0.0", true},
+		{"0.153.99", false},
+		{"0.9.0", false},
+		{"", false},
+		{"0.154", false},
+		{"1.0.invalid", false},
+		{"0.154.0-alpha.1", false},
+	} {
+		t.Run(tc.version, func(t *testing.T) {
+			if got := codexVersionSupported(tc.version); got != tc.want {
+				t.Fatalf("codexVersionSupported(%q) = %v, want %v", tc.version, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestChildStopTerminatesOwnedProcessGroup(t *testing.T) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()

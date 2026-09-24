@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -31,10 +32,35 @@ func CheckCodex(ctx context.Context, bin string) error {
 	if err != nil {
 		return fmt.Errorf("check Codex executable: %w", err)
 	}
-	if strings.TrimSpace(string(out)) != "codex-cli "+CodexVersion {
-		return fmt.Errorf("unsupported Codex version %q; this build supports codex-cli %s", strings.TrimSpace(string(out)), CodexVersion)
+	version, ok := strings.CutPrefix(strings.TrimSpace(string(out)), "codex-cli ")
+	if !ok || !codexVersionSupported(version) {
+		return fmt.Errorf("unsupported Codex version %q; this build requires codex-cli %s or newer", strings.TrimSpace(string(out)), CodexVersion)
 	}
 	return nil
+}
+
+func codexVersionSupported(version string) bool {
+	parts := strings.Split(version, ".")
+	minimum := strings.Split(CodexVersion, ".")
+	if len(parts) != len(minimum) {
+		return false
+	}
+	comparison := 0
+	for i, part := range parts {
+		value, err := strconv.ParseUint(part, 10, 64)
+		if err != nil {
+			return false
+		}
+		minValue, _ := strconv.ParseUint(minimum[i], 10, 64)
+		if comparison == 0 {
+			if value < minValue {
+				comparison = -1
+			} else if value > minValue {
+				comparison = 1
+			}
+		}
+	}
+	return comparison >= 0
 }
 
 func terminalState() (*syscall.Termios, error) {
