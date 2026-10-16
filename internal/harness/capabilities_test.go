@@ -205,3 +205,16 @@ func TestMCPStartupChangeInvalidatesPendingInventory(t *testing.T) {
 		t.Fatal("fresh runtime inventory did not complete")
 	}
 }
+
+func TestShortQuotaWaitStillRefreshesToolsAtItsDeadline(t *testing.T) {
+	r := sharedRig(t)
+	r.e.Record.NextCheck = r.now.Add(5 * time.Second)
+	r.e.Record.ToolRequirements = []ToolRequirement{{Kind: "app", AppID: "github"}}
+	r.tick(0)
+	toolInventory(r, []any{map[string]any{"id": "github", "enabled": true, "callable": true}}, []any{})
+	r.tick(6 * time.Second)
+	toolInventory(r, []any{}, []any{})
+	if !r.e.Record.ManualHold {
+		t.Fatal("short quota wait reused a pre-deadline tool snapshot")
+	}
+}

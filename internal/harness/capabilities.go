@@ -300,6 +300,10 @@ func (e *Engine) checkMCP(thread string, valid func() bool) {
 			e.toolsChecking, e.toolsReady = false, true
 			e.toolsDeadline = time.Time{}
 			e.toolsCheckAt = e.now.Add(30 * time.Second)
+			e.toolsForDeadline = time.Time{}
+			if !e.now.Before(e.Record.NextCheck) {
+				e.toolsForDeadline = e.Record.NextCheck
+			}
 			e.Record.ToolsCheckedAt = e.now.UTC()
 			e.save()
 			// Starting a tool check invalidates any in-flight recovery or goal

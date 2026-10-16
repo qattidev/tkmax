@@ -3,7 +3,7 @@
 A Go wrapper for long-running Codex goals. It launches the real Codex TUI,
 waits when usage is exhausted, and resumes the same goal when quota returns.
 
-Requires **Linux**, **Go 1.27+** to build, and **Codex CLI 0.154.0 or newer**.
+Requires **Linux**, **Go 1.27+** to build, and **Codex CLI 0.162.1 or newer**.
 
 ## Build and run
 
@@ -37,8 +37,11 @@ The terminal stays interactive throughout the wait.
 
 You can steer the task normally, answer approvals, or use `/goal pause` and
 `/goal resume`. Completion stops automatic recovery and leaves the result visible.
-Exit Codex with `/quit` or its normal quit keys to stop the wrapper and its private
-server. `Ctrl+C` retains Codex's normal in-TUI behavior; it can interrupt a turn
+Exit Codex with `/quit` or its normal quit keys to stop the wrapper. A new run owns
+a private server; a resumed run uses Codex's shared server. On exit from a resumed
+run, tkmax pauses its active managed goal and interrupts that goal's current turn,
+then disconnects. Other sessions and the shared server keep running. `Ctrl+C`
+retains Codex's normal in-TUI behavior; it can interrupt a turn
 before quitting. `SIGINT`, `SIGTERM`, and terminal hangup stop the wrapper.
 
 ## Resume and inspect
@@ -47,6 +50,9 @@ before quitting. `SIGINT`, `SIGTERM`, and terminal hangup stop the wrapper.
 tkmax ls                     # all saved runs, across repositories
 tkmax resume                 # latest unfinished run in this directory
 tkmax resume RUN_ID          # exact saved run, from any directory
+tkmax sessions               # native Codex sessions in this directory
+tkmax sessions --all         # native sessions across directories
+tkmax resume SESSION_UUID    # adopt a session originally started in Codex
 tkmax status RUN_ID          # useful from another terminal during a wait
 ```
 
@@ -74,12 +80,37 @@ selects the latest unfinished run in the current directory. Use an explicit ID
 to inspect a completed run. Status is the last persisted observation; an abrupt
 kill can leave it stale. A graceful shutdown also records its stop time.
 
-Resume reopens the saved Codex thread UUID, preserves the remaining wait, and
-checks the current goal before acting. It never uses Codex's `--last` selection.
+Resume reopens the saved Codex thread UUID through Codex's local background
+server, starting that server if needed. tkmax never restarts or stops the shared
+server and never falls back to a private server during resume. It preserves the
+remaining wait and checks the current goal and tools before automatic recovery.
+It never uses Codex's `--last` selection.
+
+To adopt a native session, stop any active turn and close its original CLI/IDE
+chat, then use its UUID from `tkmax sessions`. tkmax uses that session's saved
+directory and creates a run record. Repeating adoption reuses the same run and
+deadline. Active sessions, pending approvals/input, ephemeral sessions, and
+subagent threads cannot be adopted. Idle status alone does not prove another
+client has closed; using multiple clients on the managed chat is unsupported.
+
+Resume uses the saved Codex home, including the default home resolved for new
+records. Older records without a saved home use the current `CODEX_HOME`, or
+`~/.codex`. Launch overrides are applied to the resumed thread without changing
+global daemon configuration. Unsupported saved overrides fail explicitly.
+
 An explicitly paused, blocked, or budget-limited goal remains under your control;
 resume it inside the TUI when appropriate. Only one wrapper may own a saved run.
+Ownership also covers the same native thread referenced by different run records.
 Codex may display its native "Resume paused goal?" dialog when reopening a
 paused goal. Choose "Leave paused" to review it without restarting work.
+A goal paused by tkmax on exit stays paused until you use `/goal resume`. A
+usage-limited goal retains its deadline when you exit while waiting.
+
+If a required app or MCP tool is unavailable after resume, `tkmax status` reports
+`needs-attention` and identifies the service. Restore its login/configuration in
+Codex, then use `/goal resume` to recheck it. Tools supplied by an original
+client's custom handler require that client; the Codex TUI cannot execute those
+handlers. Automatic recovery stays disabled while those handlers are unavailable.
 
 ## Options
 
@@ -92,10 +123,14 @@ tkmax -- -c 'model_reasoning_effort="high"'
 
 Place Codex options after `--`. Run `tkmax --help` for the complete supported
 list. Existing Codex login and default configuration are used, and `-c` overrides
-are passed to both the TUI and server. Launch arguments and an explicitly selected
+are passed to both the TUI and private server on new runs. Launch arguments and the
 `CODEX_HOME` are retained for resume. Profiles, image arguments, managed worktrees,
 arbitrary Codex subcommands, and external `--remote` endpoints are not supported
 in this first version; unsupported arguments fail explicitly.
+Saved `--strict-config`, `--dangerously-bypass-hook-trust`, and `--add-dir`
+invocations cannot be resumed on the shared server and produce an explicit error.
+The last restriction avoids replacing inherited directory grants with a partial
+list. These options remain available for new private-server runs.
 
 ## Waiting behavior
 
@@ -117,13 +152,17 @@ in this first version; unsupported arguments fail explicitly.
 
 The machine and shell must remain available to run work. After machine sleep,
 the next tick compares the persisted deadline with the current time. Terminal
-closure stops the wrapper; use explicit `tkmax resume` afterward. No daemon,
-automatic login startup, or sleep inhibition is installed.
+closure stops the wrapper; use explicit `tkmax resume` afterward. Shared-server
+shutdown has a bounded attempt to pause the managed goal and interrupt its turn.
+An unconfirmed pause is reported and saved as `needs-attention`. A forced kill or
+power loss cannot perform this cleanup, and the shared server may keep working.
+tkmax installs no additional daemon, automatic login startup, or sleep inhibition.
 
 ## Implementation and state
 
 ```text
-real terminal → Codex TUI ↔ Go WebSocket/JSONL bridge ↔ Codex app-server
+real terminal → Codex TUI ↔ Go WebSocket/JSONL bridge ↔ private app-server (new)
+                                                   ↔ proxy → shared daemon (resume)
                                   │
                           quota recovery scheduler
 ```
@@ -140,8 +179,11 @@ Run records and server diagnostics are under `$XDG_STATE_HOME/tkmax/runs`, or
 permissions. They include the goal text, launch option values, thread UUID, Codex
 session name, working directory,
 deadline, and pending recovery intent. Codex retains its own conversation history
-and credentials. A `.log` file holds app-server stderr for the latest invocation;
-tkmax does not log full protocol transcripts. Run records are retained after exit.
+and credentials. A `.log` file holds private-server or proxy stderr for the latest invocation;
+it also records RPC method/error codes, thread IDs, and runtime identifiers.
+tkmax does not log full protocol transcripts or credentials. Run records include
+identifiers of observed tool dependencies and remain readable across this update.
+They are retained after exit.
 
 ## Tests
 
@@ -155,10 +197,13 @@ make smoke                   # opt-in test against the installed Codex binary
 The default suite uses fake time for quota cycles, fallback waits, weekly limits,
 manual-pause races, lost responses, and resume deadlines. It also checks protocol
 routing, large messages, WebSocket transport, process-group shutdown, and state
-locking. The WebSocket integration test requires local socket access.
+locking. Additional fixtures cover native adoption, missing apps, MCP authentication
+and startup, history paging, and shared-goal shutdown. The WebSocket integration
+test requires local socket access.
 
-The opt-in smoke test verifies native goal reactivation against the installed
-Codex binary with an isolated home and an unreachable localhost model provider.
-It checks that reactivation starts a turn without a second `turn/start` request;
-it does not use your account or make paid model requests. Real quota exhaustion
-is simulated in tests rather than consuming an actual allowance.
+The opt-in smoke tests use isolated homes and local model providers. One verifies
+that native goal reactivation starts a turn without a second `turn/start` request.
+Another executes a stub MCP tool, restarts the server, reopens the same thread
+through the tkmax bridge, and executes the tool again. They do not use your account
+or make paid model requests. Local socket access is required. Real quota exhaustion
+is simulated rather than consuming an actual allowance.

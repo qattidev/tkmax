@@ -40,6 +40,7 @@ type Engine struct {
 	toolsRetryAt     time.Time
 	toolsDeadline    time.Time
 	toolsCheckAt     time.Time
+	toolsForDeadline time.Time
 	toolsGeneration  uint64
 	err              error
 }
@@ -599,7 +600,7 @@ func (e *Engine) Tick(now time.Time) error {
 		return e.err
 	}
 	if e.Record.ServerMode == "shared" && e.ready && !e.switching && !e.Record.ManualHold && e.Record.ThreadID != "" {
-		if !e.toolsReady || (e.Record.Goal != nil && e.Record.Goal.Status == "usageLimited" && !now.Before(e.toolsCheckAt) && !now.Before(e.Record.NextCheck)) {
+		if !e.toolsReady || (e.Record.Goal != nil && e.Record.Goal.Status == "usageLimited" && !now.Before(e.Record.NextCheck) && (!e.toolsForDeadline.Equal(e.Record.NextCheck) || !now.Before(e.toolsCheckAt))) {
 			if !e.toolsChecking && !now.Before(e.toolsRetryAt) {
 				e.checkTools()
 			}

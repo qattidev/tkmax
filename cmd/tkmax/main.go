@@ -26,11 +26,16 @@ const help = `Usage:
 
 Start Codex normally, then set /goal inside its TUI. tkmax resumes that goal
 after a usage window resets. Manual pauses and goal completion leave the TUI
-open. Exit Codex normally to stop the wrapper and its private app server.
+open. New runs use a private server; resume uses Codex's shared local server.
+Exiting a resumed run pauses its active managed goal and interrupts its turn.
+Other sessions and the shared server remain running.
 
 resume/status default to the latest unfinished run in the current directory.
 status with an explicit ID can also inspect completed runs.
 ls lists all saved runs with their Codex session names and repository directories.
+sessions lists native Codex chats in this directory; --all includes other directories.
+To adopt a native session, stop its turn and close its original CLI/IDE chat first.
+Resume preserves quota deadlines and checks required apps/MCP tools before recovery.
 To let open change your shell's directory, add eval "$(tkmax shell-init bash)"
 to ~/.bashrc (use zsh and ~/.zshrc for Zsh). --print-path prints only the directory.
 
@@ -152,6 +157,12 @@ func run(ctx context.Context, args []string) error {
 		}
 		if mode == "status" {
 			fmt.Printf("Run: %s\nSession: %s\nDirectory: %s\nThread: %s\nState: %s\n", record.ID, sessionLabel(record), record.CWD, record.ThreadID, record.State)
+			if record.ServerMode != "" {
+				fmt.Printf("Codex server: %s\n", record.ServerMode)
+			}
+			if !record.ToolsCheckedAt.IsZero() {
+				fmt.Printf("Tools last checked: %s\n", record.ToolsCheckedAt.Local().Format(time.RFC1123))
+			}
 			if record.Goal != nil {
 				fmt.Printf("Goal: %s\nGoal status: %s\n", record.Goal.Objective, record.Goal.Status)
 			}
