@@ -43,15 +43,19 @@ func (e *Engine) observeTool(b json.RawMessage) {
 	}
 	switch item.Type {
 	case "mcpToolCall":
-		if item.AppContext != nil && item.AppContext.ConnectorID != "" {
-			e.requireTool(ToolRequirement{Kind: "app", AppID: item.AppContext.ConnectorID})
-		} else if item.Server != "" && item.Tool != "" {
-			e.requireTool(ToolRequirement{Kind: "mcp", Server: item.Server, Tool: item.Tool})
-		}
+		e.observeMCPDependency(item)
 	case "dynamicToolCall":
 		if item.Success != nil && *item.Success {
 			e.requireTool(ToolRequirement{Kind: "dynamic", Tool: item.Tool})
 		}
+	}
+}
+
+func (e *Engine) observeMCPDependency(item toolItem) {
+	if item.AppContext != nil && item.AppContext.ConnectorID != "" {
+		e.requireTool(ToolRequirement{Kind: "app", AppID: item.AppContext.ConnectorID})
+	} else if item.Server != "" && item.Tool != "" {
+		e.requireTool(ToolRequirement{Kind: "mcp", Server: item.Server, Tool: item.Tool})
 	}
 }
 
@@ -69,13 +73,16 @@ func (e *Engine) toolsFailure(method string, rpc *rpcError, detail string) {
 // Tool checks run as callbacks on the same actor as user input and quota
 // recovery. The selection guard prevents history/catalog replies crossing chats.
 func (e *Engine) checkTools() {
-	if e.toolsChecking || e.shuttingDown || !e.ready || e.switching || e.Record.ThreadID == "" {
+	if e.toolsChecking || !e.ready || e.switching || e.Record.ThreadID == "" {
 		return
 	}
 	e.toolsChecking, e.toolsReady = true, false
 	e.invalidate()
 	thread, selection := e.Record.ThreadID, e.selection
-	valid := func() bool { return !e.shuttingDown && thread == e.Record.ThreadID && selection == e.selection }
+	generation := e.toolsGeneration
+	valid := func() bool {
+		return generation == e.toolsGeneration && thread == e.Record.ThreadID && selection == e.selection
+	}
 	catalog := func() {
 		if !valid() {
 			return
@@ -293,6 +300,12 @@ func (e *Engine) checkMCP(thread string, valid func() bool) {
 			e.toolsChecking, e.toolsReady = false, true
 			e.toolsDeadline = time.Time{}
 			e.toolsCheckAt = e.now.Add(30 * time.Second)
+			e.Record.ToolsCheckedAt = e.now.UTC()
+			e.save()
+			// Starting a tool check invalidates any in-flight recovery or goal
+			// read. Always reconcile native goal state afterward, including
+			// limits reached while the wrapper was disconnected.
+			e.refreshGoal()
 		})
 	}
 	page("")
@@ -307,6 +320,8 @@ type mcpStatus struct {
 }
 
 func (e *Engine) capabilitiesChanged() {
+	e.toolsGeneration++
+	e.toolsChecking = false
 	e.toolsReady = false
 	e.toolsRetryAt = e.now.Add(2 * time.Second)
 	e.invalidate()

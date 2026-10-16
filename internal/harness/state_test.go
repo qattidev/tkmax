@@ -145,3 +145,58 @@ func TestPersistedDeadlineSurvivesReconnect(t *testing.T) {
 	r.preflight(Quota{Allowed: ptr(true)})
 	r.request("thread/goal/set")
 }
+
+func TestLegacyRecordsAndCapabilityMetadataRemainCompatible(t *testing.T) {
+	s := Store{Dir: t.TempDir()}
+	r, err := NewRecord(t.TempDir(), "codex", nil, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Save(r); err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := s.Load(r.ID)
+	if err != nil || legacy.CapabilitiesKnown {
+		t.Fatalf("legacy record: %+v, %v", legacy, err)
+	}
+	r.CodexHome = t.TempDir()
+	r.ServerMode = "shared"
+	r.CapabilitiesKnown = true
+	r.ToolRequirements = []ToolRequirement{{Kind: "app", AppID: "github"}, {Kind: "mcp", Server: "local", Tool: "lookup"}}
+	if err := s.Save(r); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := s.Load(r.ID)
+	if err != nil || len(loaded.ToolRequirements) != 2 || !loaded.CapabilitiesKnown {
+		t.Fatalf("lost capability metadata: %+v, %v", loaded, err)
+	}
+	r.ToolRequirements = []ToolRequirement{{Kind: "unknown"}}
+	if err := s.Save(r); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Load(r.ID); err == nil {
+		t.Fatal("corrupt dependency snapshot was silently accepted")
+	}
+}
+
+func TestSessionOwnershipCanonicalizesSymlinkedHomes(t *testing.T) {
+	home := t.TempDir()
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(home, alias); err != nil {
+		t.Fatal(err)
+	}
+	s := Store{Dir: t.TempDir()}
+	lock, err := s.LockThread(home, testSessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	if other, err := s.LockThread(alias, testSessionID); err == nil {
+		other.Close()
+		t.Fatal("symlink alias bypassed native session ownership")
+	}
+	got, err := CanonicalCodexHome(filepath.Join(alias, "not-created", "yet"))
+	if err != nil || got != filepath.Join(home, "not-created", "yet") {
+		t.Fatalf("uncreated home resolved incorrectly: %s, %v", got, err)
+	}
+}

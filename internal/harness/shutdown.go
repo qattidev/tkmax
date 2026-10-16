@@ -10,7 +10,7 @@ import (
 // the actor's record writes. It never resumes a thread, creates a goal, or
 // touches the daemon lifecycle. A replaced goal belongs to its other client.
 func PauseManagedGoal(ctx context.Context, r *Record) error {
-	if r.Goal == nil || r.ThreadID == "" {
+	if r.ThreadID == "" {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -26,7 +26,26 @@ func PauseManagedGoal(ctx context.Context, r *Record) error {
 	if err := rpc.Call(ctx, "thread/goal/get", map[string]any{"threadId": r.ThreadID}, &current); err != nil {
 		return err
 	}
-	if !sameGoal(r.Goal, current.Goal) || (current.Goal.Status != "active" && !(r.RecoveryPending && current.Goal.Status == "usageLimited")) {
+	if current.Goal == nil {
+		return nil
+	}
+	if current.Goal.ThreadID != r.ThreadID {
+		return errors.New("Codex returned a goal for a different thread during shutdown")
+	}
+	if r.Goal != nil && !sameGoal(r.Goal, current.Goal) {
+		return nil
+	}
+	if current.Goal.Status != "active" && !(r.RecoveryPending && current.Goal.Status == "usageLimited") {
+		r.Goal = current.Goal
+		if r.State != "needs-attention" {
+			r.State = current.Goal.Status
+			if r.State == "usageLimited" {
+				r.State = "waiting"
+			}
+		}
+		if current.Goal.Status != "usageLimited" {
+			r.NextCheck, r.ProbeAfter = time.Time{}, time.Time{}
+		}
 		return nil
 	}
 	var paused struct {
@@ -38,7 +57,11 @@ func PauseManagedGoal(ctx context.Context, r *Record) error {
 	if !sameGoal(current.Goal, paused.Goal) || paused.Goal.Status != "paused" {
 		return errors.New("Codex did not confirm the managed goal was paused")
 	}
+	attention := r.State == "needs-attention"
 	r.Goal, r.State, r.ManualHold, r.RecoveryPending = paused.Goal, "paused", true, false
+	if attention {
+		r.State = "needs-attention"
+	}
 	r.NextCheck, r.ProbeAfter = time.Time{}, time.Time{}
 	var thread struct {
 		Thread struct {
@@ -76,8 +99,19 @@ func PauseManagedGoal(ctx context.Context, r *Record) error {
 	}
 	for _, turn := range turns {
 		if turn.Status == "inProgress" && turn.ID != "" {
-			return rpc.Call(ctx, "turn/interrupt", map[string]any{"threadId": r.ThreadID, "turnId": turn.ID}, nil)
+			if err := rpc.Call(ctx, "turn/interrupt", map[string]any{"threadId": r.ThreadID, "turnId": turn.ID}, nil); err != nil {
+				// The turn can finish between read and interrupt. Reconcile
+				// that race instead of reporting an unconfirmed shutdown.
+				if readErr := rpc.Call(ctx, "thread/read", map[string]any{"threadId": r.ThreadID}, &thread); readErr == nil && thread.Thread.ID == r.ThreadID && thread.Thread.Status.Type != "active" {
+					return nil
+				}
+				return err
+			}
+			return nil
 		}
+	}
+	if err := rpc.Call(ctx, "thread/read", map[string]any{"threadId": r.ThreadID}, &thread); err == nil && thread.Thread.ID == r.ThreadID && thread.Thread.Status.Type != "active" {
+		return nil
 	}
 	return errors.New("goal paused, but its active turn could not be identified for interruption")
 }

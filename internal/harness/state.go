@@ -42,6 +42,7 @@ type Record struct {
 	RuntimeVersion    string            `json:"runtimeVersion,omitempty"`
 	ToolRequirements  []ToolRequirement `json:"toolRequirements,omitempty"`
 	CapabilitiesKnown bool              `json:"capabilitiesKnown,omitempty"`
+	ToolsCheckedAt    time.Time         `json:"toolsCheckedAt,omitempty"`
 	CodexArgs         []string          `json:"codexArgs,omitempty"`
 	FallbackWait      time.Duration     `json:"fallbackWait"`
 	ThreadID          string            `json:"threadId,omitempty"`
@@ -108,6 +109,11 @@ func (s Store) FindThread(home, thread string) (*Record, error) {
 func (s Store) LockThread(home, thread string) (*os.File, error) {
 	if thread == "" {
 		return nil, errors.New("cannot lock an empty Codex thread")
+	}
+	var err error
+	home, err = CanonicalCodexHome(home)
+	if err != nil {
+		return nil, err
 	}
 	sum := sha256.Sum256([]byte(home + "\x00" + thread))
 	if err := os.MkdirAll(s.Dir, 0700); err != nil {
@@ -188,6 +194,26 @@ func (s Store) Load(id string) (*Record, error) {
 	}
 	if r.ID != id || !filepath.IsAbs(r.CWD) || r.FallbackWait <= 0 {
 		return nil, errors.New("invalid saved run")
+	}
+	if r.CodexHome != "" && !filepath.IsAbs(r.CodexHome) {
+		return nil, errors.New("invalid saved Codex home")
+	}
+	if r.ServerMode != "" && r.ServerMode != "private" && r.ServerMode != "shared" {
+		return nil, errors.New("invalid saved server mode")
+	}
+	for _, requirement := range r.ToolRequirements {
+		valid := false
+		switch requirement.Kind {
+		case "app":
+			valid = requirement.AppID != ""
+		case "mcp":
+			valid = requirement.Server != ""
+		case "dynamic":
+			valid = requirement.Tool != ""
+		}
+		if !valid {
+			return nil, errors.New("invalid saved tool requirement")
+		}
 	}
 	return &r, nil
 }

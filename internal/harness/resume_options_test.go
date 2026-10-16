@@ -7,7 +7,7 @@ import (
 )
 
 func TestResumeOverridesPreserveTypedThreadConfiguration(t *testing.T) {
-	p, err := ResumeOverrides([]string{"--model", "saved-model", "-s", "workspace-write", "-a", "on-request", "-c", `model_reasoning_effort="high"`, "-c", `example=[1,2]`, "--enable", "apps", "--disable", "browser_use", "--search", "--add-dir", "/other", "--no-alt-screen"})
+	p, err := ResumeOverrides([]string{"--model", "saved-model", "-s", "workspace-write", "-a", "on-request", "-c", `model_reasoning_effort="high"`, "-c", `example=[1,2]`, "-c", `sandbox_workspace_write.writable_roots=["/other"]`, "--enable", "apps", "--disable", "browser_use", "--search", "--no-alt-screen"})
 	if err != nil {
 		t.Fatal(err)
 	}

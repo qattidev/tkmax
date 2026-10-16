@@ -19,7 +19,25 @@ func toolInventory(r *rig, apps, mcp any) {
 	r.reply(r.request("app/installed"), map[string]any{"apps": apps})
 	if !r.e.Record.ManualHold {
 		r.reply(r.request("mcpServerStatus/list"), map[string]any{"data": mcp})
+		if r.e.toolsReady {
+			r.reply(r.request("thread/goal/get"), map[string]any{"goal": r.e.Record.Goal})
+		}
 	}
+}
+
+func TestToolPreflightReconcilesGoalLimitedWhileDisconnected(t *testing.T) {
+	r := sharedRig(t)
+	r.e.Record.Goal.Status = "active"
+	r.tick(0)
+	r.reply(r.request("config/read"), map[string]any{"config": map[string]any{}})
+	r.reply(r.request("app/installed"), map[string]any{"apps": []any{}})
+	r.reply(r.request("mcpServerStatus/list"), map[string]any{"data": []any{}})
+	limited := *r.e.Record.Goal
+	limited.Status = "usageLimited"
+	r.reply(r.request("thread/goal/get"), map[string]any{"goal": &limited})
+	r.tick(0)
+	r.preflight(Quota{Allowed: ptr(true)})
+	r.request("thread/goal/set")
 }
 
 func TestSharedRecoveryRequiresUsableToolsAndRechecksAtDeadline(t *testing.T) {
@@ -153,5 +171,37 @@ func TestFailedSelectionCannotRecoverSavedGoal(t *testing.T) {
 	r.tick(24 * time.Hour)
 	if len(r.server) != 0 {
 		t.Fatal("failed resume still scheduled recovery")
+	}
+}
+
+func TestRecoverableMCPCallErrorRechecksServiceWithoutManualHold(t *testing.T) {
+	r := sharedRig(t)
+	r.notify("item/completed", map[string]any{"threadId": "thread-1", "item": map[string]any{"type": "mcpToolCall", "status": "failed", "server": "service", "tool": "lookup", "error": map[string]any{"message": "invalid arguments"}}})
+	if r.e.Record.ManualHold {
+		t.Fatal("an ordinary tool argument error requires human recovery")
+	}
+	r.tick(3 * time.Second)
+	toolInventory(r, []any{}, []any{map[string]any{"name": "service", "runtimeStatus": "connected", "tools": map[string]any{"lookup": map[string]any{}}}})
+	if !r.e.toolsReady || r.e.Record.ManualHold {
+		t.Fatal("healthy service failed the recheck")
+	}
+	r.tick(0)
+	r.preflight(Quota{Allowed: ptr(true)})
+	r.request("thread/goal/set")
+}
+
+func TestMCPStartupChangeInvalidatesPendingInventory(t *testing.T) {
+	r := sharedRig(t)
+	r.tick(0)
+	old := r.request("config/read")
+	r.notify("mcpServer/startupStatus/updated", map[string]any{"threadId": "thread-1"})
+	r.reply(old, map[string]any{"config": map[string]any{}})
+	if len(r.server) != 0 || r.e.toolsReady {
+		t.Fatal("stale inventory advanced after an MCP runtime change")
+	}
+	r.tick(3 * time.Second)
+	toolInventory(r, []any{}, []any{})
+	if !r.e.toolsReady {
+		t.Fatal("fresh runtime inventory did not complete")
 	}
 }

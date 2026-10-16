@@ -40,7 +40,7 @@ type Engine struct {
 	toolsRetryAt     time.Time
 	toolsDeadline    time.Time
 	toolsCheckAt     time.Time
-	shuttingDown     bool
+	toolsGeneration  uint64
 	err              error
 }
 
@@ -136,7 +136,9 @@ func (e *Engine) TUI(b []byte, now time.Time) error {
 		// Observe required events even if this TUI opted out; keep its original
 		// filtering on the downstream connection.
 		var p message
-		_ = json.Unmarshal(m["params"], &p)
+		if err := json.Unmarshal(m["params"], &p); err != nil || p == nil {
+			return errors.New("invalid Codex initialize parameters")
+		}
 		var caps message
 		_ = json.Unmarshal(p["capabilities"], &caps)
 		if caps == nil {
@@ -162,11 +164,14 @@ func (e *Engine) TUI(b []byte, now time.Time) error {
 	}
 	if method == "thread/resume" && e.Record.ServerMode == "shared" {
 		var p message
-		if err := json.Unmarshal(m["params"], &p); err != nil {
-			return err
+		if err := json.Unmarshal(m["params"], &p); err != nil || p == nil {
+			return errors.New("invalid Codex resume parameters")
 		}
 		// Apply saved overrides only to the original managed conversation.
 		if str(p["threadId"]) == e.Record.ThreadID {
+			if _, explicit := e.ResumeConfig["sandbox"]; explicit {
+				delete(p, "permissions")
+			}
 			for key, value := range e.ResumeConfig {
 				if key == "config" {
 					var config map[string]any
@@ -372,6 +377,7 @@ func (e *Engine) selectThread(t threadInfo) {
 		e.Record.ManualHold = false
 		e.Record.ToolRequirements = nil
 		e.Record.CapabilitiesKnown = false
+		e.Record.ToolsCheckedAt = time.Time{}
 	}
 	e.toolsReady, e.toolsChecking = false, false
 	e.toolsDeadline, e.toolsRetryAt = time.Time{}, time.Time{}
@@ -422,8 +428,15 @@ func (e *Engine) observe(method string, params json.RawMessage) {
 		e.observeTool(p.Item)
 		if e.Record.ServerMode == "shared" {
 			var item toolItem
-			if json.Unmarshal(p.Item, &item) == nil && item.Status == "failed" && (item.Type == "mcpToolCall" || item.Type == "dynamicToolCall") {
-				e.toolsFailure("", nil, "Tool "+item.Server+"/"+item.Tool+" failed in the resumed session; inspect its error in Codex")
+			if json.Unmarshal(p.Item, &item) == nil && item.Status == "failed" {
+				if item.Type == "mcpToolCall" {
+					// The model can correct argument/service errors. Verify
+					// availability before requiring human attention.
+					e.observeMCPDependency(item)
+					e.capabilitiesChanged()
+				} else if item.Type == "dynamicToolCall" {
+					e.toolsFailure("", nil, "Tool "+item.Tool+" requires its original client's unavailable handler")
+				}
 			}
 		}
 	case "mcpServer/startupStatus/updated":
@@ -582,7 +595,7 @@ func (e *Engine) Tick(now time.Time) error {
 		delete(e.pending, id)
 		r.callback(nil, &rpcError{Code: -1, Message: "Codex request timed out; reconciling before retry"})
 	}
-	if e.shuttingDown || e.selectionFailed {
+	if e.selectionFailed {
 		return e.err
 	}
 	if e.Record.ServerMode == "shared" && e.ready && !e.switching && !e.Record.ManualHold && e.Record.ThreadID != "" {

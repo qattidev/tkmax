@@ -37,12 +37,11 @@ func verifyResumeOverrides(b json.RawMessage, expected map[string]any) error {
 func ResumeOverrides(args []string) (map[string]any, error) {
 	p := map[string]any{}
 	config := map[string]any{}
-	var dirs []string
 	for i := 0; i < len(args); i++ {
 		name := args[i]
 		switch name {
 		case "--no-alt-screen":
-		case "--strict-config", "--dangerously-bypass-hook-trust":
+		case "--strict-config", "--dangerously-bypass-hook-trust", "--add-dir":
 			return nil, fmt.Errorf("saved option %s cannot be applied to a shared Codex server; resume directly in Codex or start a new tkmax run without it", name)
 		case "--search":
 			config["web_search"] = "live"
@@ -63,8 +62,6 @@ func ResumeOverrides(args []string) (map[string]any, error) {
 				p["sandbox"] = value
 			case "--ask-for-approval", "-a":
 				p["approvalPolicy"] = value
-			case "--add-dir":
-				dirs = append(dirs, value)
 			case "--enable", "--disable":
 				config["features."+value] = name == "--enable"
 			case "-c", "--config":
@@ -82,12 +79,6 @@ func ResumeOverrides(args []string) (map[string]any, error) {
 				return nil, fmt.Errorf("cannot preserve saved option %s on shared-server resume", name)
 			}
 		}
-	}
-	if len(dirs) != 0 {
-		if _, exists := config["sandbox_workspace_write.writable_roots"]; exists {
-			return nil, fmt.Errorf("cannot safely combine --add-dir with a writable_roots config override on resume")
-		}
-		config["sandbox_workspace_write.writable_roots"] = dirs
 	}
 	if len(config) != 0 {
 		p["config"] = config

@@ -120,8 +120,8 @@ func (c *child) stop() {
 	}
 }
 
-// Run owns only its private app server, socket, and TUI. The shared Codex
-// daemon and other sessions are never stopped or selected by --last.
+// Run owns its socket, TUI, and private server or proxy process. The shared
+// Codex daemon and other sessions are never stopped or selected by --last.
 func Run(ctx context.Context, store Store, r *Record, resume bool, serverArgs, tuiArgs []string) (runErr error) {
 	// Linux parent-death signals belong to the creating OS thread. Keep that
 	// thread alive for the entire child lifetime, even while Go reschedules.
@@ -249,21 +249,33 @@ func Run(ctx context.Context, store Store, r *Record, resume bool, serverArgs, t
 	cmd.Dir = r.CWD
 	cmd.Env = childEnvironment(r.CodexHome)
 	cmd.Stderr = log
-	input, err := cmd.StdoutPipe()
-	if err != nil {
-		return err
+	var input io.ReadCloser
+	var output io.WriteCloser
+	var server *child
+	if resume {
+		proxy, err := startProxy(ctx, cmd)
+		if err != nil {
+			return fmt.Errorf("connect Codex shared server: %w", err)
+		}
+		input, output, server = proxy.Input, proxy.Output, proxy.child
+		defer proxy.Close()
+	} else {
+		input, err = cmd.StdoutPipe()
+		if err != nil {
+			return err
+		}
+		defer input.Close()
+		output, err = cmd.StdinPipe()
+		if err != nil {
+			return err
+		}
+		defer output.Close()
+		server, err = startChild(cmd, true)
+		if err != nil {
+			return fmt.Errorf("start Codex app-server: %w", err)
+		}
+		defer server.stop()
 	}
-	defer input.Close()
-	output, err := cmd.StdinPipe()
-	if err != nil {
-		return err
-	}
-	defer output.Close()
-	server, err := startChild(cmd, true)
-	if err != nil {
-		return fmt.Errorf("start Codex app-server: %w", err)
-	}
-	defer server.stop()
 	managed := false
 	defer func() {
 		if !resume || !managed {
@@ -316,7 +328,7 @@ func Run(ctx context.Context, store Store, r *Record, resume bool, serverArgs, t
 			managed = true
 			return nil
 		}, ResumeConfig: resumeConfig, Diagnostic: func(method string, code int) {
-			fmt.Fprintf(log, "tkmax rpc method=%s code=%d thread=%s minimum_codex=%s\n", method, code, r.ThreadID, CodexVersion)
+			fmt.Fprintf(log, "tkmax rpc method=%q code=%d thread=%s runtime=%q minimum_codex=%s\n", method, code, r.ThreadID, r.RuntimeVersion, CodexVersion)
 		}})
 	})
 	go func() { _ = httpServer.Serve(listener) }()

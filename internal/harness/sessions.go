@@ -37,7 +37,11 @@ func CanonicalCodexHome(home string) (string, error) {
 	}
 	resolved, err := filepath.EvalSymlinks(abs)
 	if os.IsNotExist(err) {
-		return filepath.Clean(abs), nil
+		parent, err := CanonicalCodexHome(filepath.Dir(abs))
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(parent, filepath.Base(abs)), nil
 	}
 	return resolved, err
 }
@@ -45,12 +49,13 @@ func CanonicalCodexHome(home string) (string, error) {
 // rpcClient is a short-lived, sequential control connection. Notifications are
 // consumed, never replayed into a different client's TUI.
 type rpcClient struct {
-	input    io.WriteCloser
-	output   io.ReadCloser
-	child    *child
-	packets  chan packet
-	done     chan struct{}
-	sequence int
+	input          io.WriteCloser
+	output         io.ReadCloser
+	child          *child
+	packets        chan packet
+	done           chan struct{}
+	sequence       int
+	closeTransport func()
 }
 
 func startRPC(cmd *exec.Cmd) (*rpcClient, error) {
@@ -69,6 +74,10 @@ func startRPC(cmd *exec.Cmd) (*rpcClient, error) {
 		out.Close()
 		return nil, err
 	}
+	return newRPC(in, out, c), nil
+}
+
+func newRPC(in io.WriteCloser, out io.ReadCloser, c *child) *rpcClient {
 	r := &rpcClient{input: in, output: out, child: c, packets: make(chan packet, 16), done: make(chan struct{})}
 	go func() {
 		reader := bufio.NewReader(out)
@@ -84,24 +93,39 @@ func startRPC(cmd *exec.Cmd) (*rpcClient, error) {
 			}
 		}
 	}()
-	return r, nil
+	return r
 }
 
 func (r *rpcClient) Close() {
 	close(r.done)
 	r.input.Close()
 	r.output.Close()
-	r.child.stop()
+	if r.closeTransport != nil {
+		r.closeTransport()
+	} else {
+		r.child.stop()
+	}
 }
 
 func (r *rpcClient) Call(ctx context.Context, method string, params, result any) error {
 	r.sequence++
 	id := r.sequence
-	if _, err := r.input.Write(append(raw(map[string]any{"id": id, "method": method, "params": params}), '\n')); err != nil {
-		return err
-	}
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
+	written := make(chan error, 1)
+	go func() {
+		_, err := r.input.Write(append(raw(map[string]any{"id": id, "method": method, "params": params}), '\n'))
+		written <- err
+	}()
+	select {
+	case err := <-written:
+		if err != nil {
+			return fmt.Errorf("%s: %w", method, err)
+		}
+	case <-ctx.Done():
+		r.input.Close()
+		return fmt.Errorf("%s: %w", method, ctx.Err())
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -160,10 +184,12 @@ func openShared(ctx context.Context, bin, home string) (*rpcClient, error) {
 func connectShared(ctx context.Context, bin, home string) (*rpcClient, error) {
 	cmd := exec.Command(bin, "app-server", "proxy")
 	cmd.Env = childEnvironment(home)
-	r, err := startRPC(cmd)
+	proxy, err := startProxy(ctx, cmd)
 	if err != nil {
 		return nil, err
 	}
+	r := newRPC(proxy.Output, proxy.Input, proxy.child)
+	r.closeTransport = proxy.Close
 	var initialized struct {
 		CodexHome string `json:"codexHome"`
 	}

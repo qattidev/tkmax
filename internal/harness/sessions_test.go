@@ -1,13 +1,16 @@
 package harness
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
-	"fmt"
+	"github.com/coder/websocket"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -24,31 +27,66 @@ func TestCodexRPCProcess(t *testing.T) {
 	if err := json.Unmarshal([]byte(os.Getenv("TKMAX_RPC_FIXTURES")), &fixtures); err != nil {
 		os.Exit(2)
 	}
-	reader := bufio.NewScanner(os.Stdin)
-	for reader.Scan() {
-		var m message
-		if json.Unmarshal(reader.Bytes(), &m) != nil {
-			os.Exit(3)
+	listener := &stdioListener{conn: &stdioConn{Reader: os.Stdin, Writer: os.Stdout}, done: make(chan struct{})}
+	_ = http.Serve(listener, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		defer listener.Close()
+		ws, err := websocket.Accept(w, req, nil)
+		if err != nil {
+			return
 		}
-		method := str(m["method"])
-		if path := os.Getenv("TKMAX_RPC_CALLS"); path != "" {
-			if f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600); err == nil {
-				_, _ = f.Write(append(raw(m), '\n'))
-				f.Close()
+		defer ws.CloseNow()
+		counts := map[string]int{}
+		for {
+			_, b, err := ws.Read(context.Background())
+			if err != nil {
+				return
 			}
+			var m message
+			if json.Unmarshal(b, &m) != nil {
+				os.Exit(3)
+			}
+			method := str(m["method"])
+			counts[method]++
+			if path := os.Getenv("TKMAX_RPC_CALLS"); path != "" {
+				if f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600); err == nil {
+					_, _ = f.Write(append(raw(m), '\n'))
+					f.Close()
+				}
+			}
+			if _, ok := m["id"]; !ok {
+				continue
+			}
+			result, ok := fixtures[method]
+			if numbered, exists := fixtures[method+"#"+strconv.Itoa(counts[method])]; exists {
+				result, ok = numbered, true
+			}
+			if !ok {
+				_ = ws.Write(context.Background(), websocket.MessageText, raw(map[string]any{"id": m["id"], "error": map[string]any{"code": -32601, "message": "unsupported method"}}))
+				continue
+			}
+			_ = ws.Write(context.Background(), websocket.MessageText, raw(map[string]any{"id": m["id"], "result": result}))
 		}
-		if _, ok := m["id"]; !ok {
-			continue
-		}
-		result, ok := fixtures[method]
-		if !ok {
-			fmt.Println(string(raw(map[string]any{"id": m["id"], "error": map[string]any{"code": -32601, "message": "unsupported method"}})))
-			continue
-		}
-		fmt.Println(string(raw(map[string]any{"id": m["id"], "result": result})))
-	}
+	}))
 	os.Exit(0)
 }
+
+type stdioListener struct {
+	conn net.Conn
+	used bool
+	done chan struct{}
+	once sync.Once
+}
+
+func (l *stdioListener) Accept() (net.Conn, error) {
+	if !l.used {
+		l.used = true
+		return l.conn, nil
+	}
+	<-l.done
+	return nil, net.ErrClosed
+}
+func (l *stdioListener) Close() error   { l.once.Do(func() { close(l.done) }); return nil }
+func (l *stdioListener) Addr() net.Addr { return stdioAddr("fixture") }
 
 func fakeCodex(t *testing.T, home string, fixtures map[string]any) string {
 	t.Helper()
@@ -100,7 +138,7 @@ func TestAdoptNativeSessionAndReuseRecord(t *testing.T) {
 }
 
 func TestAdoptionRejectsUnsafeOrMissingSessions(t *testing.T) {
-	for _, kind := range []string{"active", "approval", "ephemeral", "child", "missing-directory", "different-id", "missing"} {
+	for _, kind := range []string{"active", "approval", "ephemeral", "child", "client-owned", "missing-directory", "different-id", "missing"} {
 		t.Run(kind, func(t *testing.T) {
 			home, cwd := t.TempDir(), t.TempDir()
 			thread := map[string]any{"id": testSessionID, "cwd": cwd, "status": map[string]any{"type": "idle"}}
@@ -113,6 +151,8 @@ func TestAdoptionRejectsUnsafeOrMissingSessions(t *testing.T) {
 				thread["ephemeral"] = true
 			case "child":
 				thread["parentThreadId"] = "parent"
+			case "client-owned":
+				thread["canAcceptDirectInput"] = false
 			case "missing-directory":
 				thread["cwd"] = filepath.Join(cwd, "missing")
 			case "different-id":

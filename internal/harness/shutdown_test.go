@@ -64,7 +64,11 @@ func TestSharedShutdownPreservesWaitingOrReplacedGoals(t *testing.T) {
 			if (err != nil) != (kind == "pause-denied") {
 				t.Fatalf("unexpected pause result: %v", err)
 			}
-			if !r.NextCheck.Equal(deadline) {
+			if kind == "completed" {
+				if !r.NextCheck.IsZero() || r.Goal.Status != "complete" {
+					t.Fatal("native goal completion was not reconciled")
+				}
+			} else if !r.NextCheck.Equal(deadline) {
 				t.Fatal("saved wait was discarded")
 			}
 			b, _ := os.ReadFile(calls)
@@ -72,5 +76,22 @@ func TestSharedShutdownPreservesWaitingOrReplacedGoals(t *testing.T) {
 				t.Fatal("waiting/replaced/completed goal was changed")
 			}
 		})
+	}
+}
+
+func TestShutdownReconcilesTurnFinishingDuringPause(t *testing.T) {
+	r := newRig(t).e.Record
+	r.CodexHome = t.TempDir()
+	r.Goal.Status = "active"
+	paused := *r.Goal
+	paused.Status = "paused"
+	r.CodexBin = fakeCodex(t, r.CodexHome, map[string]any{
+		"thread/goal/get": map[string]any{"goal": r.Goal}, "thread/goal/set": map[string]any{"goal": &paused},
+		"thread/read":       map[string]any{"thread": map[string]any{"id": r.ThreadID, "historyMode": "paginated", "status": map[string]any{"type": "active"}}},
+		"thread/read#2":     map[string]any{"thread": map[string]any{"id": r.ThreadID, "status": map[string]any{"type": "idle"}}},
+		"thread/turns/list": map[string]any{"data": []any{map[string]any{"id": "finished", "status": "completed"}}},
+	})
+	if err := PauseManagedGoal(context.Background(), r); err != nil {
+		t.Fatal("finished turn caused a false shutdown failure:", err)
 	}
 }
