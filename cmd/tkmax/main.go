@@ -17,9 +17,10 @@ import (
 
 const help = `Usage:
   tkmax [--codex-bin PATH] [--fallback-wait 5h] [-- CODEX_OPTIONS...]
-  tkmax resume [RUN_ID]
+  tkmax resume [RUN_ID|SESSION_UUID]
   tkmax status [RUN_ID]
   tkmax ls
+  tkmax sessions [--all] [--codex-bin PATH]
   tkmax open [--print-path] RUN_ID
   tkmax shell-init bash|zsh
 
@@ -39,7 +40,7 @@ Supported Codex options after --:
   --approve-for-me, --dangerously-bypass-approvals-and-sandbox,
   --dangerously-bypass-hook-trust
 
-Linux and Codex CLI 0.154.0 are supported. Existing Codex login/configuration
+Linux and Codex CLI 0.162.1 or newer are supported. Existing Codex login/configuration
 are used. Run records live in $XDG_STATE_HOME/tkmax/runs (default:
 ~/.local/state/tkmax/runs). Original option values are saved privately there.
 `
@@ -59,6 +60,8 @@ func main() {
 func run(ctx context.Context, args []string) error {
 	if len(args) > 0 {
 		switch args[0] {
+		case "sessions":
+			return runSessions(ctx, args[1:], os.Stdout)
 		case "ls", "open", "shell-init":
 			return runNavigation(args, os.Stdout)
 		}
@@ -112,21 +115,34 @@ func run(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		record.CodexHome = os.Getenv("CODEX_HOME")
-		if record.CodexHome != "" {
-			record.CodexHome, err = filepath.Abs(record.CodexHome)
-			if err != nil {
-				return err
-			}
+		record.CodexHome, err = harness.CanonicalCodexHome("")
+		if err != nil {
+			return err
 		}
+		record.ServerMode = "private"
 	} else {
-		if f.NFlag() != 0 {
+		native := mode == "resume" && len(f.Args()) == 1 && harness.IsSessionID(f.Arg(0))
+		if f.NFlag() != 0 && !native {
 			return errors.New("resume/status use the saved configuration; wrapper flags are only supported on a new run")
 		}
 		if len(f.Args()) > 1 {
-			return errors.New("resume/status accept at most one run ID")
+			return errors.New("resume/status accept at most one run ID (resume also accepts a Codex session UUID)")
 		}
-		if len(f.Args()) == 1 {
+		if native {
+			home, err := harness.CanonicalCodexHome("")
+			if err != nil {
+				return err
+			}
+			resolved, err := exec.LookPath(*bin)
+			if err != nil {
+				return err
+			}
+			resolved, err = filepath.Abs(resolved)
+			if err != nil {
+				return err
+			}
+			record, err = harness.Adopt(ctx, store, resolved, home, f.Arg(0), *fallback)
+		} else if len(f.Args()) == 1 {
 			record, err = store.Load(f.Args()[0])
 		} else {
 			record, err = store.Latest(cwd)

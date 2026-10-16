@@ -18,9 +18,10 @@ func TestCodexVersionSupported(t *testing.T) {
 		version string
 		want    bool
 	}{
-		{"0.154.0", true},
-		{"0.154.1", true},
-		{"0.155.0", true},
+		{"0.154.0", false},
+		{"0.162.0", false},
+		{"0.162.1", true},
+		{"0.163.0", true},
 		{"0.1000.0", true},
 		{"1.0.0", true},
 		{"0.153.99", false},

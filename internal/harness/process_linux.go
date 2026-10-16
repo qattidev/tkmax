@@ -23,7 +23,7 @@ import (
 	"github.com/coder/websocket"
 )
 
-const CodexVersion = "0.154.0"
+const CodexVersion = "0.162.1"
 
 func CheckCodex(ctx context.Context, bin string) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)

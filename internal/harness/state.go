@@ -2,6 +2,7 @@ package harness
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -37,6 +38,7 @@ type Record struct {
 	CWD             string        `json:"cwd"`
 	CodexBin        string        `json:"codexBin"`
 	CodexHome       string        `json:"codexHome,omitempty"`
+	ServerMode      string        `json:"serverMode,omitempty"`
 	CodexArgs       []string      `json:"codexArgs,omitempty"`
 	FallbackWait    time.Duration `json:"fallbackWait"`
 	ThreadID        string        `json:"threadId,omitempty"`
@@ -78,6 +80,46 @@ func NewRecord(cwd, bin string, args []string, fallback time.Duration) (*Record,
 }
 
 var validID = regexp.MustCompile(`^[a-f0-9]{24}$`)
+
+func (s Store) FindThread(home, thread string) (*Record, error) {
+	records, err := s.List()
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range records {
+		if r.ThreadID != thread {
+			continue
+		}
+		savedHome, err := CanonicalCodexHome(r.CodexHome)
+		if err != nil {
+			return nil, err
+		}
+		if savedHome == home {
+			return r, nil
+		}
+	}
+	return nil, nil
+}
+
+// The native session lock also covers duplicate/legacy records with different run IDs.
+func (s Store) LockThread(home, thread string) (*os.File, error) {
+	if thread == "" {
+		return nil, errors.New("cannot lock an empty Codex thread")
+	}
+	sum := sha256.Sum256([]byte(home + "\x00" + thread))
+	if err := os.MkdirAll(s.Dir, 0700); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(filepath.Join(s.Dir, fmt.Sprintf("thread-%x.lock", sum)), os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("Codex session %s is already managed by another tkmax wrapper: %w", thread, err)
+	}
+	return f, nil
+}
 
 func (s Store) path(id string) (string, error) {
 	if !validID.MatchString(id) {
