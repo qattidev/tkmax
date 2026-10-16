@@ -264,6 +264,18 @@ func Run(ctx context.Context, store Store, r *Record, resume bool, serverArgs, t
 		return fmt.Errorf("start Codex app-server: %w", err)
 	}
 	defer server.stop()
+	managed := false
+	defer func() {
+		if !resume || !managed {
+			return
+		}
+		if err := PauseManagedGoal(context.Background(), r); err != nil {
+			r.ManualHold, r.State = true, "needs-attention"
+			r.Message = "Could not confirm goal pause/turn interruption on exit; Codex may still be working. Inspect this session in Codex: " + err.Error()
+			fmt.Fprintln(os.Stderr, "tkmax:", r.Message)
+			runErr = errors.Join(runErr, errors.New(r.Message))
+		}
+	}()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	bridgeDone := make(chan error, 1)
@@ -297,7 +309,15 @@ func Run(ctx context.Context, store Store, r *Record, resume bool, serverArgs, t
 		connection = ws
 		mu.Unlock()
 		defer ws.CloseNow()
-		bridgeDone <- Bridge(ctx, ws, input, output, r, store.Save, BridgeOptions{ClaimThread: claimThread, ResumeConfig: resumeConfig})
+		bridgeDone <- Bridge(ctx, ws, input, output, r, store.Save, BridgeOptions{ClaimThread: func(id string) error {
+			if err := claimThread(id); err != nil {
+				return err
+			}
+			managed = true
+			return nil
+		}, ResumeConfig: resumeConfig, Diagnostic: func(method string, code int) {
+			fmt.Fprintf(log, "tkmax rpc method=%s code=%d thread=%s minimum_codex=%s\n", method, code, r.ThreadID, CodexVersion)
+		}})
 	})
 	go func() { _ = httpServer.Serve(listener) }()
 	defer httpServer.Close()

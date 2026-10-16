@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -152,6 +153,11 @@ func openShared(ctx context.Context, bin, home string) (*rpcClient, error) {
 	if err := ensureDaemon(ctx, bin, home); err != nil {
 		return nil, err
 	}
+	return connectShared(ctx, bin, home)
+}
+
+// Connecting during shutdown must never start or restart the daemon.
+func connectShared(ctx context.Context, bin, home string) (*rpcClient, error) {
 	cmd := exec.Command(bin, "app-server", "proxy")
 	cmd.Env = childEnvironment(home)
 	r, err := startRPC(cmd)
@@ -180,12 +186,13 @@ func openShared(ctx context.Context, bin, home string) (*rpcClient, error) {
 }
 
 type Session struct {
-	ID             string `json:"id"`
-	Name           string `json:"name"`
-	CWD            string `json:"cwd"`
-	ParentThreadID string `json:"parentThreadId"`
-	Ephemeral      bool   `json:"ephemeral"`
-	Status         struct {
+	ID                   string `json:"id"`
+	Name                 string `json:"name"`
+	CWD                  string `json:"cwd"`
+	ParentThreadID       string `json:"parentThreadId"`
+	Ephemeral            bool   `json:"ephemeral"`
+	CanAcceptDirectInput *bool  `json:"canAcceptDirectInput"`
+	Status               struct {
 		Type        string   `json:"type"`
 		ActiveFlags []string `json:"activeFlags"`
 	} `json:"status"`
@@ -197,6 +204,9 @@ func (s Session) adoptable() error {
 	}
 	if s.Ephemeral || s.ParentThreadID != "" {
 		return errors.New("only persistent root Codex sessions can be adopted")
+	}
+	if s.CanAcceptDirectInput != nil && !*s.CanAcceptDirectInput {
+		return errors.New("session is controlled by its original client and cannot accept direct Codex TUI input")
 	}
 	if s.Status.Type != "notLoaded" && s.Status.Type != "idle" && s.Status.Type != "systemError" {
 		return errors.New("session is active or waiting for approval/input; stop it and close its original CLI/IDE chat before resuming with tkmax")
@@ -261,6 +271,7 @@ func Adopt(ctx context.Context, store Store, bin, home, id string, fallback time
 	if !IsSessionID(id) {
 		return nil, fmt.Errorf("invalid Codex session UUID %q", id)
 	}
+	id = strings.ToLower(id)
 	if r, err := store.FindThread(home, id); r != nil || err != nil {
 		return r, err
 	}

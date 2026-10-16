@@ -45,6 +45,7 @@ type packet struct {
 type BridgeOptions struct {
 	ClaimThread  func(string) error
 	ResumeConfig map[string]any
+	Diagnostic   func(string, int)
 }
 
 func Bridge(ctx context.Context, ws *websocket.Conn, input io.Reader, output io.Writer, record *Record, save func(*Record) error, options ...BridgeOptions) error {
@@ -129,6 +130,7 @@ func Bridge(ctx context.Context, ws *websocket.Conn, input io.Reader, output io.
 	e := NewEngine(record, queue(serverOut), queue(tuiOut), save)
 	if len(options) != 0 {
 		e.ClaimThread, e.ResumeConfig = options[0].ClaimThread, options[0].ResumeConfig
+		e.Diagnostic = options[0].Diagnostic
 	}
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()

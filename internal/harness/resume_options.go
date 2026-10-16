@@ -1,11 +1,35 @@
 package harness
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/pelletier/go-toml/v2"
 )
+
+func verifyResumeOverrides(b json.RawMessage, expected map[string]any) error {
+	var result map[string]json.RawMessage
+	if err := json.Unmarshal(b, &result); err != nil {
+		return err
+	}
+	for _, key := range []string{"model", "approvalPolicy", "approvalsReviewer"} {
+		if value, ok := expected[key]; ok && string(result[key]) != string(raw(value)) {
+			return fmt.Errorf("Codex did not preserve saved %s on resume", key)
+		}
+	}
+	if value, ok := expected["sandbox"].(string); ok {
+		var policy struct {
+			Type string `json:"type"`
+		}
+		_ = json.Unmarshal(result["sandbox"], &policy)
+		want := map[string]string{"read-only": "readOnly", "workspace-write": "workspaceWrite", "danger-full-access": "dangerFullAccess"}[value]
+		if want == "" || policy.Type != want {
+			return fmt.Errorf("Codex did not preserve the saved sandbox on resume")
+		}
+	}
+	return nil
+}
 
 // ResumeOverrides translates saved CLI arguments into thread-local RPC inputs.
 // Never send these arguments to daemon start/proxy: that cannot configure an

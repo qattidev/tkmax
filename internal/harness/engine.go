@@ -17,12 +17,14 @@ type Engine struct {
 	Save             func(*Record) error
 	ClaimThread      func(string) error
 	ResumeConfig     map[string]any
+	Diagnostic       func(method string, code int)
 	now              time.Time
 	ready            bool
 	sequence         uint64
 	epoch            uint64
 	selection        uint64
 	switching        bool
+	selectionFailed  bool
 	pending          map[string]request
 	serverRequests   map[string]json.RawMessage
 	answeredRequests map[string]json.RawMessage
@@ -32,17 +34,25 @@ type Engine struct {
 	model            string
 	retry            time.Duration
 	pollAt           time.Time
+	historyMode      string
+	toolsReady       bool
+	toolsChecking    bool
+	toolsRetryAt     time.Time
+	toolsDeadline    time.Time
+	toolsCheckAt     time.Time
+	shuttingDown     bool
 	err              error
 }
 
 type request struct {
-	original  json.RawMessage
-	method    string
-	thread    string
-	selection uint64
-	manual    bool
-	callback  func(json.RawMessage, *rpcError)
-	deadline  time.Time
+	original     json.RawMessage
+	method       string
+	thread       string
+	selection    uint64
+	manual       bool
+	resumeConfig map[string]any
+	callback     func(json.RawMessage, *rpcError)
+	deadline     time.Time
 }
 
 type rpcError struct {
@@ -182,6 +192,9 @@ func (e *Engine) TUI(b []byte, now time.Time) error {
 		}
 		_ = json.Unmarshal(m["params"], &p)
 		r := request{original: id, method: method, thread: p.ThreadID}
+		if method == "thread/resume" && p.ThreadID == e.Record.ThreadID {
+			r.resumeConfig = e.ResumeConfig
+		}
 		if method == "thread/start" || method == "thread/resume" || method == "thread/fork" {
 			e.selection++
 			e.switching = true
@@ -196,6 +209,11 @@ func (e *Engine) TUI(b []byte, now time.Time) error {
 			}
 			if method == "turn/start" || (method == "thread/goal/set" && p.Status == "active") {
 				e.Record.ManualHold = false
+				if e.Record.ServerMode == "shared" {
+					e.toolsReady = false
+					e.toolsDeadline = time.Time{}
+					e.toolsRetryAt = now
+				}
 			}
 			e.save()
 		}
@@ -217,7 +235,7 @@ func isUserAction(method string) bool {
 
 func observedMethod(method string) bool {
 	switch method {
-	case "thread/name/updated", "thread/goal/updated", "thread/goal/cleared", "thread/status/changed", "thread/settings/updated", "turn/started", "turn/completed", "error", "thread/closed", "thread/archived", "thread/deleted", "serverRequest/resolved":
+	case "thread/name/updated", "thread/goal/updated", "thread/goal/cleared", "thread/status/changed", "thread/settings/updated", "turn/started", "turn/completed", "error", "thread/closed", "thread/archived", "thread/deleted", "serverRequest/resolved", "item/completed", "mcpServer/startupStatus/updated":
 		return true
 	}
 	return false
@@ -239,15 +257,20 @@ func (e *Engine) Server(b []byte, now time.Time) error {
 		delete(e.pending, key)
 		var rpcErr *rpcError
 		_ = json.Unmarshal(m["error"], &rpcErr)
+		if rpcErr != nil && e.Diagnostic != nil {
+			e.Diagnostic(r.method, rpcErr.Code)
+		}
 		if r.method == "initialize" && rpcErr == nil && e.Record.ServerMode == "shared" {
 			var result struct {
 				CodexHome string `json:"codexHome"`
+				UserAgent string `json:"userAgent"`
 			}
 			_ = json.Unmarshal(m["result"], &result)
 			home, err := CanonicalCodexHome(result.CodexHome)
 			if err != nil || result.CodexHome == "" || home != e.Record.CodexHome {
 				return fmt.Errorf("Codex shared server CODEX_HOME mismatch; expected %s", e.Record.CodexHome)
 			}
+			e.Record.RuntimeVersion = result.UserAgent
 		}
 		if r.callback != nil {
 			r.callback(m["result"], rpcErr)
@@ -255,13 +278,20 @@ func (e *Engine) Server(b []byte, now time.Time) error {
 		}
 		if r.selection != 0 && r.selection == e.selection {
 			e.switching = false
+			e.selectionFailed = rpcErr != nil
 			if rpcErr == nil {
 				var result struct {
 					Thread threadInfo `json:"thread"`
 				}
 				if json.Unmarshal(m["result"], &result) == nil && result.Thread.ID != "" && result.Thread.ParentThreadID == "" {
 					e.selectThread(result.Thread)
+					if r.method == "thread/resume" && e.Record.ServerMode == "shared" {
+						if err := verifyResumeOverrides(m["result"], r.resumeConfig); err != nil {
+							e.toolsFailure("", nil, err.Error())
+						}
+					}
 				} else {
+					e.selectionFailed = true
 					e.Record.ManualHold = true
 					e.save()
 				}
@@ -275,6 +305,15 @@ func (e *Engine) Server(b []byte, now time.Time) error {
 		return e.err
 	}
 	if id, ok := m["id"]; ok {
+		if method == "item/tool/call" && e.Record.ServerMode == "shared" {
+			var p struct {
+				ThreadID string `json:"threadId"`
+			}
+			_ = json.Unmarshal(m["params"], &p)
+			if p.ThreadID == e.Record.ThreadID {
+				e.toolsFailure("", nil, "A dynamic tool requested its original client's handler, which is unavailable in the Codex TUI")
+			}
+		}
 		key := e.id("server")
 		e.serverRequests[key] = id
 		m["id"] = raw(key)
@@ -309,6 +348,7 @@ type threadInfo struct {
 	CWD            string `json:"cwd"`
 	ParentThreadID string `json:"parentThreadId"`
 	Model          string `json:"model"`
+	HistoryMode    string `json:"historyMode"`
 	Status         struct {
 		Type        string   `json:"type"`
 		ActiveFlags []string `json:"activeFlags"`
@@ -324,12 +364,18 @@ func (e *Engine) selectThread(t threadInfo) {
 	}
 	e.invalidate()
 	if t.ID != e.Record.ThreadID {
+		e.ResumeConfig = nil
 		e.Record.Goal = nil
 		e.Record.NextCheck = time.Time{}
 		e.Record.ProbeAfter = time.Time{}
 		e.Record.RecoveryPending = false
 		e.Record.ManualHold = false
+		e.Record.ToolRequirements = nil
+		e.Record.CapabilitiesKnown = false
 	}
+	e.toolsReady, e.toolsChecking = false, false
+	e.toolsDeadline, e.toolsRetryAt = time.Time{}, time.Time{}
+	e.historyMode = t.HistoryMode
 	e.Record.ThreadID = t.ID
 	e.Record.SessionName = t.Name
 	if t.CWD != "" {
@@ -341,6 +387,9 @@ func (e *Engine) selectThread(t threadInfo) {
 	e.Record.Message = ""
 	e.save()
 	e.refreshGoal()
+	if e.Record.ServerMode == "shared" {
+		e.checkTools()
+	}
 }
 
 func (e *Engine) observe(method string, params json.RawMessage) {
@@ -355,8 +404,9 @@ func (e *Engine) observe(method string, params json.RawMessage) {
 			Status string     `json:"status"`
 			Error  *turnError `json:"error"`
 		} `json:"turn"`
-		Error     *turnError `json:"error"`
-		WillRetry bool       `json:"willRetry"`
+		Error     *turnError      `json:"error"`
+		WillRetry bool            `json:"willRetry"`
+		Item      json.RawMessage `json:"item"`
 		Settings  struct {
 			Model string `json:"model"`
 		} `json:"settings"`
@@ -368,6 +418,16 @@ func (e *Engine) observe(method string, params json.RawMessage) {
 		return
 	}
 	switch method {
+	case "item/completed":
+		e.observeTool(p.Item)
+		if e.Record.ServerMode == "shared" {
+			var item toolItem
+			if json.Unmarshal(p.Item, &item) == nil && item.Status == "failed" && (item.Type == "mcpToolCall" || item.Type == "dynamicToolCall") {
+				e.toolsFailure("", nil, "Tool "+item.Server+"/"+item.Tool+" failed in the resumed session; inspect its error in Codex")
+			}
+		}
+	case "mcpServer/startupStatus/updated":
+		e.capabilitiesChanged()
 	case "thread/name/updated":
 		e.Record.SessionName = p.ThreadName
 		e.save()
@@ -521,6 +581,17 @@ func (e *Engine) Tick(now time.Time) error {
 		r := e.pending[id]
 		delete(e.pending, id)
 		r.callback(nil, &rpcError{Code: -1, Message: "Codex request timed out; reconciling before retry"})
+	}
+	if e.shuttingDown || e.selectionFailed {
+		return e.err
+	}
+	if e.Record.ServerMode == "shared" && e.ready && !e.switching && !e.Record.ManualHold && e.Record.ThreadID != "" {
+		if !e.toolsReady || (e.Record.Goal != nil && e.Record.Goal.Status == "usageLimited" && !now.Before(e.toolsCheckAt) && !now.Before(e.Record.NextCheck)) {
+			if !e.toolsChecking && !now.Before(e.toolsRetryAt) {
+				e.checkTools()
+			}
+			return e.err
+		}
 	}
 	if !e.ready || e.busy || e.switching || e.Record.ThreadID == "" || e.Record.ManualHold {
 		return e.err

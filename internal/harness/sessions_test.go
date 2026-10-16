@@ -31,6 +31,12 @@ func TestCodexRPCProcess(t *testing.T) {
 			os.Exit(3)
 		}
 		method := str(m["method"])
+		if path := os.Getenv("TKMAX_RPC_CALLS"); path != "" {
+			if f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600); err == nil {
+				_, _ = f.Write(append(raw(m), '\n'))
+				f.Close()
+			}
+		}
 		if _, ok := m["id"]; !ok {
 			continue
 		}

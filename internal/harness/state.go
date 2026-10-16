@@ -33,25 +33,28 @@ func sameGoal(a, b *Goal) bool {
 }
 
 type Record struct {
-	Version         int           `json:"version"`
-	ID              string        `json:"id"`
-	CWD             string        `json:"cwd"`
-	CodexBin        string        `json:"codexBin"`
-	CodexHome       string        `json:"codexHome,omitempty"`
-	ServerMode      string        `json:"serverMode,omitempty"`
-	CodexArgs       []string      `json:"codexArgs,omitempty"`
-	FallbackWait    time.Duration `json:"fallbackWait"`
-	ThreadID        string        `json:"threadId,omitempty"`
-	SessionName     string        `json:"sessionName,omitempty"`
-	Goal            *Goal         `json:"goal,omitempty"`
-	State           string        `json:"state"`
-	NextCheck       time.Time     `json:"nextCheck,omitempty"`
-	ProbeAfter      time.Time     `json:"probeAfter,omitempty"`
-	RecoveryPending bool          `json:"recoveryPending"`
-	ManualHold      bool          `json:"manualHold"`
-	Message         string        `json:"message,omitempty"`
-	UpdatedAt       time.Time     `json:"updatedAt"`
-	StoppedAt       time.Time     `json:"stoppedAt,omitempty"`
+	Version           int               `json:"version"`
+	ID                string            `json:"id"`
+	CWD               string            `json:"cwd"`
+	CodexBin          string            `json:"codexBin"`
+	CodexHome         string            `json:"codexHome,omitempty"`
+	ServerMode        string            `json:"serverMode,omitempty"`
+	RuntimeVersion    string            `json:"runtimeVersion,omitempty"`
+	ToolRequirements  []ToolRequirement `json:"toolRequirements,omitempty"`
+	CapabilitiesKnown bool              `json:"capabilitiesKnown,omitempty"`
+	CodexArgs         []string          `json:"codexArgs,omitempty"`
+	FallbackWait      time.Duration     `json:"fallbackWait"`
+	ThreadID          string            `json:"threadId,omitempty"`
+	SessionName       string            `json:"sessionName,omitempty"`
+	Goal              *Goal             `json:"goal,omitempty"`
+	State             string            `json:"state"`
+	NextCheck         time.Time         `json:"nextCheck,omitempty"`
+	ProbeAfter        time.Time         `json:"probeAfter,omitempty"`
+	RecoveryPending   bool              `json:"recoveryPending"`
+	ManualHold        bool              `json:"manualHold"`
+	Message           string            `json:"message,omitempty"`
+	UpdatedAt         time.Time         `json:"updatedAt"`
+	StoppedAt         time.Time         `json:"stoppedAt,omitempty"`
 }
 
 type Store struct{ Dir string }
