@@ -15,6 +15,8 @@ type Engine struct {
 	ToServer         func([]byte) error
 	ToTUI            func([]byte) error
 	Save             func(*Record) error
+	ClaimThread      func(string) error
+	ResumeConfig     map[string]any
 	now              time.Time
 	ready            bool
 	sequence         uint64
@@ -127,6 +129,10 @@ func (e *Engine) TUI(b []byte, now time.Time) error {
 		_ = json.Unmarshal(m["params"], &p)
 		var caps message
 		_ = json.Unmarshal(p["capabilities"], &caps)
+		if caps == nil {
+			caps = message{}
+		}
+		caps["experimentalApi"] = raw(true)
 		var methods []string
 		_ = json.Unmarshal(caps["optOutNotificationMethods"], &methods)
 		for _, method := range methods {
@@ -140,7 +146,32 @@ func (e *Engine) TUI(b []byte, now time.Time) error {
 				}
 			}
 			caps["optOutNotificationMethods"] = raw(keep)
-			p["capabilities"] = raw(caps)
+		}
+		p["capabilities"] = raw(caps)
+		m["params"] = raw(p)
+	}
+	if method == "thread/resume" && e.Record.ServerMode == "shared" {
+		var p message
+		if err := json.Unmarshal(m["params"], &p); err != nil {
+			return err
+		}
+		// Apply saved overrides only to the original managed conversation.
+		if str(p["threadId"]) == e.Record.ThreadID {
+			for key, value := range e.ResumeConfig {
+				if key == "config" {
+					var config map[string]any
+					_ = json.Unmarshal(p[key], &config)
+					if config == nil {
+						config = map[string]any{}
+					}
+					for k, v := range value.(map[string]any) {
+						config[k] = v
+					}
+					p[key] = raw(config)
+				} else {
+					p[key] = raw(value)
+				}
+			}
 			m["params"] = raw(p)
 		}
 	}
@@ -208,6 +239,16 @@ func (e *Engine) Server(b []byte, now time.Time) error {
 		delete(e.pending, key)
 		var rpcErr *rpcError
 		_ = json.Unmarshal(m["error"], &rpcErr)
+		if r.method == "initialize" && rpcErr == nil && e.Record.ServerMode == "shared" {
+			var result struct {
+				CodexHome string `json:"codexHome"`
+			}
+			_ = json.Unmarshal(m["result"], &result)
+			home, err := CanonicalCodexHome(result.CodexHome)
+			if err != nil || result.CodexHome == "" || home != e.Record.CodexHome {
+				return fmt.Errorf("Codex shared server CODEX_HOME mismatch; expected %s", e.Record.CodexHome)
+			}
+		}
 		if r.callback != nil {
 			r.callback(m["result"], rpcErr)
 			return e.err
@@ -275,6 +316,12 @@ type threadInfo struct {
 }
 
 func (e *Engine) selectThread(t threadInfo) {
+	if e.ClaimThread != nil {
+		if err := e.ClaimThread(t.ID); err != nil {
+			e.err = err
+			return
+		}
+	}
 	e.invalidate()
 	if t.ID != e.Record.ThreadID {
 		e.Record.Goal = nil
@@ -648,7 +695,7 @@ func (e *Engine) failProtocol(msg string) {
 	e.busy = false
 	e.Record.ManualHold = true
 	e.Record.State = "needs-attention"
-	e.warning(msg + "; automatic recovery disabled. This build supports Codex 0.154.0.")
+	e.warning(msg + "; automatic recovery disabled. This build requires Codex " + CodexVersion + " or newer with the required RPCs.")
 }
 
 func (e *Engine) queryFailure(err *rpcError) {

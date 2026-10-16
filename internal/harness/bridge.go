@@ -42,7 +42,12 @@ type packet struct {
 	err    error
 }
 
-func Bridge(ctx context.Context, ws *websocket.Conn, input io.Reader, output io.Writer, record *Record, save func(*Record) error) error {
+type BridgeOptions struct {
+	ClaimThread  func(string) error
+	ResumeConfig map[string]any
+}
+
+func Bridge(ctx context.Context, ws *websocket.Conn, input io.Reader, output io.Writer, record *Record, save func(*Record) error, options ...BridgeOptions) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	ws.SetReadLimit(maxFrame)
@@ -122,6 +127,9 @@ func Bridge(ctx context.Context, ws *websocket.Conn, input io.Reader, output io.
 		}
 	}
 	e := NewEngine(record, queue(serverOut), queue(tuiOut), save)
+	if len(options) != 0 {
+		e.ClaimThread, e.ResumeConfig = options[0].ClaimThread, options[0].ResumeConfig
+	}
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 	for {

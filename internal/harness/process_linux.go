@@ -148,6 +148,60 @@ func Run(ctx context.Context, store Store, r *Record, resume bool, serverArgs, t
 		}
 		*r = *fresh
 	}
+	r.CodexHome, err = CanonicalCodexHome(r.CodexHome)
+	if err != nil {
+		return err
+	}
+	var threadLock *os.File
+	lockedThread := ""
+	defer func() {
+		if threadLock != nil {
+			threadLock.Close()
+		}
+	}()
+	claimThread := func(id string) error {
+		if id == lockedThread {
+			return nil
+		}
+		next, err := store.LockThread(r.CodexHome, id)
+		if err != nil {
+			return err
+		}
+		if threadLock != nil {
+			threadLock.Close()
+		}
+		threadLock, lockedThread = next, id
+		return nil
+	}
+	var resumeConfig map[string]any
+	if resume {
+		if err := claimThread(r.ThreadID); err != nil {
+			return err
+		}
+		resumeConfig, err = ResumeOverrides(r.CodexArgs)
+		if err != nil {
+			return err
+		}
+		rpc, err := openShared(ctx, r.CodexBin, r.CodexHome)
+		if err != nil {
+			return err
+		}
+		var result struct {
+			Thread Session `json:"thread"`
+		}
+		err = rpc.Call(ctx, "thread/read", map[string]any{"threadId": r.ThreadID}, &result)
+		rpc.Close()
+		if err != nil {
+			return err
+		}
+		if result.Thread.ID != r.ThreadID {
+			return errors.New("Codex returned a different session UUID")
+		}
+		if err := result.Thread.adoptable(); err != nil {
+			return err
+		}
+		r.ServerMode = "shared"
+	}
 	r.StoppedAt = time.Time{}
 	if err := store.Save(r); err != nil {
 		return err
@@ -162,7 +216,11 @@ func Run(ctx context.Context, store Store, r *Record, resume bool, serverArgs, t
 			fmt.Fprint(os.Stderr, "\x1b[?1049l\x1b[?2004l\x1b[?1004l\x1b[<u\x1b[>4;0m\x1b[0m\x1b[?25h")
 		}
 		if r.ThreadID != "" {
-			fmt.Fprintf(os.Stderr, "tkmax stopped its private Codex server. Resume: tkmax resume %s\n", r.ID)
+			if r.ServerMode == "shared" {
+				fmt.Fprintf(os.Stderr, "tkmax disconnected from Codex's shared server. Resume: tkmax resume %s\n", r.ID)
+			} else {
+				fmt.Fprintf(os.Stderr, "tkmax stopped its private Codex server. Resume: tkmax resume %s\n", r.ID)
+			}
 		}
 	}()
 	dir, err := os.MkdirTemp("", "tkmax-")
@@ -185,6 +243,9 @@ func Run(ctx context.Context, store Store, r *Record, resume bool, serverArgs, t
 	}
 	defer log.Close()
 	cmd := exec.Command(r.CodexBin, append([]string{"app-server", "--stdio"}, serverArgs...)...)
+	if resume {
+		cmd = exec.Command(r.CodexBin, "app-server", "proxy")
+	}
 	cmd.Dir = r.CWD
 	cmd.Env = childEnvironment(r.CodexHome)
 	cmd.Stderr = log
@@ -236,7 +297,7 @@ func Run(ctx context.Context, store Store, r *Record, resume bool, serverArgs, t
 		connection = ws
 		mu.Unlock()
 		defer ws.CloseNow()
-		bridgeDone <- Bridge(ctx, ws, input, output, r, store.Save)
+		bridgeDone <- Bridge(ctx, ws, input, output, r, store.Save, BridgeOptions{ClaimThread: claimThread, ResumeConfig: resumeConfig})
 	})
 	go func() { _ = httpServer.Serve(listener) }()
 	defer httpServer.Close()
