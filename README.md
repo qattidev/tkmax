@@ -116,13 +116,15 @@ handlers. Automatic recovery stays disabled while those handlers are unavailable
 
 ```sh
 tkmax --codex-bin /path/to/codex --fallback-wait 5h
-tkmax -- --model gpt-6-astra --sandbox workspace-write
+tkmax --reserve-percent 5 -- --model gpt-6-astra --sandbox workspace-write
 tkmax -- --cd /path/to/project --no-alt-screen
 tkmax -- -c 'model_reasoning_effort="high"'
 ```
 
 Place Codex options after `--`. Run `tkmax --help` for the complete supported
-list. Existing Codex login and default configuration are used, and `-c` overrides
+list. `--reserve-percent` (default `5`) pauses a working goal when only that
+percentage of the weekly quota remains, leaving the rest for other jobs; set `0`
+to disable. Existing Codex login and default configuration are used, and `-c` overrides
 are passed to both the TUI and private server on new runs. Launch arguments and the
 `CODEX_HOME` are retained for resume. Profiles, image arguments, managed worktrees,
 arbitrary Codex subcommands, and external `--remote` endpoints are not supported
@@ -136,6 +138,10 @@ list. These options remain available for new private-server runs.
 
 - This is quota-based, not a five-hours-on/five-hours-off timer. Runtime alone
   never interrupts a working goal.
+- While a goal is working, tkmax checks the weekly quota at each turn boundary
+  and pauses the goal once usage reaches the `--reserve-percent` threshold. The
+  goal then stays paused for manual `/goal resume`; overshoot is bounded to one
+  in-flight turn.
 - Exhausted windows supply the next check time, with a 30-second reset buffer.
   Longer limits, including weekly limits, can extend the wait.
 - Missing reset information uses `--fallback-wait`, defaulting to five hours.

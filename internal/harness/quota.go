@@ -75,6 +75,29 @@ func applicableBuckets(q Quota, model string) []QuotaBucket {
 	return []QuotaBucket{q.Bucket}
 }
 
+// reserveReached reports whether the longest-period (weekly) quota window for
+// model is at or above 100-reservePercent used, and its raw reset time.
+func reserveReached(q Quota, model string, reservePercent float64, now time.Time) (bool, time.Time) {
+	if reservePercent <= 0 {
+		return false, time.Time{}
+	}
+	var weekly *Window
+	for _, b := range applicableBuckets(q, model) {
+		for _, w := range []*Window{b.Primary, b.Secondary} {
+			if w == nil || w.ResetsAt == nil || !time.Unix(*w.ResetsAt, 0).After(now) {
+				continue
+			}
+			if weekly == nil || time.Unix(*w.ResetsAt, 0).After(time.Unix(*weekly.ResetsAt, 0)) {
+				weekly = w
+			}
+		}
+	}
+	if weekly == nil || weekly.UsedPercent < 100-reservePercent {
+		return false, time.Time{}
+	}
+	return true, time.Unix(*weekly.ResetsAt, 0)
+}
+
 func hasFutureBlock(q Quota, model string, now time.Time) bool {
 	for _, b := range applicableBuckets(q, model) {
 		for _, w := range []*Window{b.Primary, b.Secondary} {

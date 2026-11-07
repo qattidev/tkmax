@@ -37,6 +37,7 @@ type Engine struct {
 	historyMode      string
 	toolsReady       bool
 	toolsChecking    bool
+	reserveChecking  bool
 	toolsRetryAt     time.Time
 	toolsDeadline    time.Time
 	toolsCheckAt     time.Time
@@ -580,6 +581,7 @@ func (e *Engine) refreshGoal() {
 			return
 		}
 		e.applyGoal(p.Goal)
+		e.reserveCheck()
 	})
 }
 
@@ -768,6 +770,75 @@ func (e *Engine) resumeGoal() {
 		e.applyGoal(p.Goal)
 		if p.Goal.Status == "active" {
 			e.warning("Quota recovery accepted; continuing the existing goal.")
+		}
+	})
+}
+
+// reserveCheck polls the weekly quota after a goal refresh (e.g. a completed
+// turn) and pauses a still-active goal when the reserve threshold is crossed.
+// It is best-effort: read errors are ignored and the next turn rechecks.
+func (e *Engine) reserveCheck() {
+	if e.reserveChecking || e.Record.ReservePercent <= 0 {
+		return
+	}
+	if !e.ready || e.Record.ThreadID == "" || e.switching || e.Record.ManualHold {
+		return
+	}
+	if e.Record.Goal == nil || e.Record.Goal.Status != "active" {
+		return
+	}
+	e.reserveChecking = true
+	epoch, thread := e.epoch, e.Record.ThreadID
+	e.query("account/rateLimits/read", map[string]any{"excludeResetCreditDetails": true}, func(b json.RawMessage, err *rpcError) {
+		if epoch != e.epoch || thread != e.Record.ThreadID {
+			e.reserveChecking = false
+			return
+		}
+		e.reserveChecking = false
+		if err != nil {
+			return
+		}
+		if e.Record.ManualHold || e.Record.Goal == nil || e.Record.Goal.Status != "active" {
+			return
+		}
+		var q Quota
+		if json.Unmarshal(b, &q) != nil {
+			return
+		}
+		reached, resetAt := reserveReached(q, e.model, e.Record.ReservePercent, e.now)
+		if !reached {
+			return
+		}
+		e.pauseForReserve(resetAt)
+	})
+}
+
+// pauseForReserve pauses the goal and leaves it paused for manual resume.
+func (e *Engine) pauseForReserve(resetAt time.Time) {
+	if len(e.serverRequests) != 0 {
+		return
+	}
+	e.busy = true
+	epoch, thread := e.epoch, e.Record.ThreadID
+	e.query("thread/goal/set", map[string]any{"threadId": thread, "status": "paused"}, func(b json.RawMessage, err *rpcError) {
+		if epoch != e.epoch || thread != e.Record.ThreadID {
+			return
+		}
+		e.busy = false
+		if err != nil {
+			e.queryFailure(err)
+			return
+		}
+		var p struct {
+			Goal *Goal `json:"goal"`
+		}
+		if json.Unmarshal(b, &p) != nil || p.Goal == nil {
+			e.failProtocol("invalid goal reserve response")
+			return
+		}
+		e.applyGoal(p.Goal)
+		if p.Goal.Status == "paused" {
+			e.warning("Weekly quota reserve reached; paused to preserve remaining quota. Quota resets " + resetAt.Local().Format(time.RFC1123) + ". Use /goal resume to continue.")
 		}
 	})
 }

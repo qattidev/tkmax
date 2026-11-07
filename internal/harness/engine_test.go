@@ -418,3 +418,31 @@ func TestAuthenticationFailureStaysVisible(t *testing.T) {
 		t.Fatal("authentication failure hidden or retried as quota")
 	}
 }
+
+func TestQuotaReservePausesGoal(t *testing.T) {
+	r := newRig(t)
+	r.e.Record.ReservePercent = 5
+	r.e.Record.Goal.Status = "active"
+	r.e.Record.State = "working"
+	r.notify("turn/completed", map[string]any{"threadId": "thread-1", "turn": map[string]any{"status": "completed"}})
+	r.reply(r.request("thread/goal/get"), map[string]any{"goal": r.e.Record.Goal})
+	reset := r.now.Add(6 * 24 * time.Hour).Unix()
+	r.reply(r.request("account/rateLimits/read"), Quota{Bucket: QuotaBucket{Primary: &Window{UsedPercent: 96, ResetsAt: &reset}}})
+	m := r.request("thread/goal/set")
+	var p message
+	_ = json.Unmarshal(m["params"], &p)
+	if str(p["status"]) != "paused" || str(p["threadId"]) != "thread-1" {
+		t.Fatalf("reserve did not pause the goal: %s", m["params"])
+	}
+	r.reply(m, map[string]any{"goal": r.goal("paused")})
+	if r.e.Record.State != "paused" || r.e.Record.Goal.Status != "paused" {
+		t.Fatalf("goal not left paused: state=%s status=%s", r.e.Record.State, r.e.Record.Goal.Status)
+	}
+	if !strings.Contains(r.e.Record.Message, "reserve") {
+		t.Fatalf("reserve reason not recorded: %q", r.e.Record.Message)
+	}
+	r.tick(7 * 24 * time.Hour)
+	if len(r.server) != 0 {
+		t.Fatal("reserved goal was resumed automatically")
+	}
+}

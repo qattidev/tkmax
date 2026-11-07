@@ -33,3 +33,39 @@ func TestQuotaDeadlines(t *testing.T) {
 		t.Fatal("reset buffer ignored")
 	}
 }
+
+func TestReserveReached(t *testing.T) {
+	now := time.Unix(1800000000, 0)
+	w := func(p float64, d time.Duration) *Window {
+		return &Window{UsedPercent: p, ResetsAt: ptr(now.Add(d).Unix())}
+	}
+	cases := []struct {
+		name      string
+		q         Quota
+		reserve   float64
+		want      bool
+		wantReset time.Duration
+	}{
+		{"disabled", Quota{Bucket: QuotaBucket{Primary: w(99, 6*24*time.Hour)}}, 0, false, 0},
+		{"below-threshold", Quota{Bucket: QuotaBucket{Primary: w(94, 6*24*time.Hour)}}, 5, false, 0},
+		{"at-threshold", Quota{Bucket: QuotaBucket{Primary: w(95, 6*24*time.Hour)}}, 5, true, 6 * 24 * time.Hour},
+		{"weekly-wins-over-daily", Quota{Bucket: QuotaBucket{Primary: w(99, time.Hour), Secondary: w(94, 6*24*time.Hour)}}, 5, false, 0},
+		{"stale-weekly-ignored", Quota{Bucket: QuotaBucket{Primary: w(99, -time.Hour)}}, 5, false, 0},
+		{"model-specific-weekly", Quota{Bucket: QuotaBucket{Primary: w(99, time.Hour)}, Buckets: map[string]QuotaBucket{"specific": {NormalModelSlug: "model-a", Primary: w(96, 6*24*time.Hour)}}}, 5, true, 6 * 24 * time.Hour},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reached, reset := reserveReached(tc.q, "model-a", tc.reserve, now)
+			if reached != tc.want {
+				t.Fatalf("reached = %v, want %v", reached, tc.want)
+			}
+			if tc.wantReset == 0 {
+				if !reset.IsZero() {
+					t.Fatalf("reset = %v, want zero", reset)
+				}
+			} else if !reset.Equal(now.Add(tc.wantReset)) {
+				t.Fatalf("reset = %v, want %v", reset, now.Add(tc.wantReset))
+			}
+		})
+	}
+}

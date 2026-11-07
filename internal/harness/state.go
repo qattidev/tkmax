@@ -45,6 +45,7 @@ type Record struct {
 	ToolsCheckedAt    time.Time         `json:"toolsCheckedAt,omitempty"`
 	CodexArgs         []string          `json:"codexArgs,omitempty"`
 	FallbackWait      time.Duration     `json:"fallbackWait"`
+	ReservePercent    float64           `json:"reservePercent,omitempty"`
 	ThreadID          string            `json:"threadId,omitempty"`
 	SessionName       string            `json:"sessionName,omitempty"`
 	Goal              *Goal             `json:"goal,omitempty"`
@@ -194,6 +195,9 @@ func (s Store) Load(id string) (*Record, error) {
 	}
 	if r.ID != id || !filepath.IsAbs(r.CWD) || r.FallbackWait <= 0 {
 		return nil, errors.New("invalid saved run")
+	}
+	if r.ReservePercent < 0 || r.ReservePercent > 100 {
+		return nil, errors.New("invalid saved reserve percentage")
 	}
 	if r.CodexHome != "" && !filepath.IsAbs(r.CodexHome) {
 		return nil, errors.New("invalid saved Codex home")

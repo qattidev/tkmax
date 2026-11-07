@@ -16,7 +16,7 @@ import (
 )
 
 const help = `Usage:
-  tkmax [--codex-bin PATH] [--fallback-wait 5h] [-- CODEX_OPTIONS...]
+  tkmax [--codex-bin PATH] [--fallback-wait 5h] [--reserve-percent 5] [-- CODEX_OPTIONS...]
   tkmax resume [RUN_ID|SESSION_UUID]
   tkmax status [RUN_ID]
   tkmax ls
@@ -29,6 +29,9 @@ after a usage window resets. Manual pauses and goal completion leave the TUI
 open. New runs use a private server; resume uses Codex's shared local server.
 Exiting a resumed run pauses its active managed goal and interrupts its turn.
 Other sessions and the shared server remain running.
+While a goal is working, --reserve-percent (default 5) pauses it once the weekly
+quota is down to that percentage, leaving the rest for other jobs; the goal then
+stays paused for manual /goal resume. Set 0 to disable.
 
 resume/status default to the latest unfinished run in the current directory.
 status with an explicit ID can also inspect completed runs.
@@ -80,6 +83,7 @@ func run(ctx context.Context, args []string) error {
 	f.Usage = func() { fmt.Fprint(f.Output(), help) }
 	bin := f.String("codex-bin", "codex", "Codex executable")
 	fallback := f.Duration("fallback-wait", 5*time.Hour, "wait when the quota reset time is unavailable")
+	reserve := f.Float64("reserve-percent", 5, "pause a working goal when this percent of the weekly quota remains (0 disables)")
 	if err := f.Parse(args); errors.Is(err, flag.ErrHelp) {
 		return nil
 	} else if err != nil {
@@ -87,6 +91,9 @@ func run(ctx context.Context, args []string) error {
 	}
 	if *fallback <= 0 {
 		return errors.New("--fallback-wait must be positive")
+	}
+	if *reserve < 0 || *reserve > 100 {
+		return errors.New("--reserve-percent must be between 0 and 100")
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -120,6 +127,7 @@ func run(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
+		record.ReservePercent = *reserve
 		record.CodexHome, err = harness.CanonicalCodexHome("")
 		if err != nil {
 			return err
